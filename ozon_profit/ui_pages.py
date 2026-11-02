@@ -19,9 +19,8 @@ def today():return datetime.now(MOSCOW).date()
 
 
 def latest_period(db):
-    last=db.execute('SELECT max(day) FROM operations').fetchone()[0] or get_setting(db,'api_end') or str(today())
-    end=date.fromisoformat(last)
-    return end.replace(day=1),end
+    from .dashboard import latest_period as choose_period
+    return choose_period(db,today())
 
 
 def ensure_profit(db):
@@ -31,8 +30,8 @@ def ensure_profit(db):
     if get_setting(db,'api_profit_last_success')==get_setting(db,'api_last_success') and get_setting(db,'api_profit_enabled')=='1' and not calculate(db,a,b)['stale_api']:return
     from .api_ledger import promote
     try:promote(db,a,b,tax_base=get_setting(db,'tax_base','sales'),enable=True)
-    except ValueError:
-        message='Есть несопоставленные начисления или товары без себестоимости. Сохранён предыдущий расчёт.'
+    except ValueError as exc:
+        message=str(exc)
         if get_setting(db,'api_profit_error')!=message:set_setting(db,'api_profit_error',message)
 
 
@@ -97,13 +96,25 @@ def overview(db):
     elif choice=='За 7 дней':start,end=today()-timedelta(days=6),today()
     else:start,end=latest_period(db)
     if end<start:st.error('Проверьте даты');return
-    result=calculate(db,start,end)
+    from .dashboard import snapshot
+    result,issues,raw_net=snapshot(db,start,end)
     st.caption(f'{start:%d.%m.%Y} — {end:%d.%m.%Y} · Предварительный расчёт')
+    if issues:
+        st.warning('Начисления загружены, но прибыль за этот период пока нельзя рассчитать. Ниже указаны причины.')
+        cols=st.columns(3)
+        cols[0].metric('Чистая прибыль','Требуется проверка')
+        cols[1].metric('Реализация покупателям','Требуется проверка')
+        cols[2].metric('Начислено Ozon',cash(raw_net))
+        st.dataframe(pd.DataFrame({'Что проверить':issues}),hide_index=True,width='stretch')
+        return
     if not result['count']:
         if active_credentials():st.info('За выбранный период нет рассчитанных данных. Нажмите «Обновить». Если загрузка завершится ошибкой, её причина появится выше. Себестоимость загружается один раз в разделе «Товары».')
         else:st.info('Начните с настроек: подключите Ozon и один раз загрузите себестоимость в разделе «Товары».')
-    if get_setting(db,'api_profit_error'):st.warning('Не всё удалось пересчитать. Подробности — в настройках. Прежние данные сохранены.')
-    if result['missing']:st.warning('У некоторых продаж нет себестоимости. Заполните её в разделе «Товары», чтобы увидеть прибыль.')
+    if get_setting(db,'api_profit_error') and not result['count']:st.warning(get_setting(db,'api_profit_error'))
+    if result['missing']:
+        st.warning('Не заполнена себестоимость на дату продажи. Укажите её в разделе «Товары», включая дату начала действия.')
+        missing=[{'Дата продажи':r['day'],'Артикул':r['sku'],'Товар':r['name'],'Причина':r['issue']} for r in result['details'] if r['issue'] and r['issue']!='Примерная себестоимость']
+        st.dataframe(pd.DataFrame(missing).drop_duplicates(),hide_index=True,width='stretch')
     elif result['estimated']:st.info(f'В расчёте {result["estimated"]} продаж с примерной себестоимостью. Их можно уточнить в товарах.')
     top=st.columns([2,1,1])
     top[0].metric('Чистая прибыль · предварительно',_profit(result))
@@ -119,7 +130,8 @@ def overview(db):
     row[3].metric('Рентабельность',margin)
     minis=st.columns(3)
     for col,label,first in zip(minis,['Сегодня','За 7 дней','Этот месяц'],[today(),today()-timedelta(days=6),today().replace(day=1)]):
-        col.caption(label+' · '+_profit(calculate(db,first,today())))
+        mini,mini_issues,_=snapshot(db,first,today())
+        col.caption(label+' · '+('Требуется проверка' if mini_issues else _profit(mini)))
     if not frame.empty:
         left,right=st.columns([3,2])
         with left:

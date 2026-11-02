@@ -390,3 +390,53 @@ def test_missing_cost_ui_hides_profit_and_blocks_activation(db,tmp_path,monkeypa
     assert any(m.label=='Предварительная прибыль' and m.value=='Нужна себестоимость' for m in app.metric)
     app.checkbox(key='api_profit_approve').check().run()
     assert app.button(key='api_profit_enable').disabled
+
+
+def test_dashboard_shows_staged_period_when_other_period_blocks_promotion(db):
+    from ozon_profit.dashboard import snapshot,latest_period
+    stage(db,[posting_accrual()])
+    set_setting(db,'api_end','2026-10-31')
+    set_setting(db,'api_profit_error','Другой период требует проверки')
+    result,issues,raw=snapshot(db,START,END)
+    assert not issues and raw is None
+    assert result['net']==395 and result['profit']==D('214.990')
+    assert latest_period(db,date(2026,11,2))==(date(2026,8,3),date(2026,8,3))
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0
+
+
+def test_dashboard_missing_historical_cost_still_shows_receipts(db):
+    from ozon_profit.dashboard import snapshot
+    stage(db,[posting_accrual()])
+    db.execute('UPDATE costs SET since=?',('2026-11-01',));db.commit()
+    result,issues,raw=snapshot(db,START,END)
+    assert not issues and raw is None
+    assert result['net']==395 and result['revenue']==500
+    assert result['missing']==1
+    assert any(r['issue']=='Не задана себестоимость на дату продажи' for r in result['details'])
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0
+
+
+def test_dashboard_unmatched_sku_shows_raw_receipts_and_blocks_profit(db):
+    from ozon_profit.dashboard import snapshot
+    stage(db,[posting_accrual()])
+    db.execute('DELETE FROM product_links');db.execute('DELETE FROM api_postings');db.commit()
+    result,issues,raw=snapshot(db,START,END)
+    assert issues and raw==395
+    assert result['count']==0
+
+
+def test_dashboard_ui_explains_missing_cost_instead_of_zero_receipts(db,tmp_path,monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    import sqlite3
+    stage(db,[posting_accrual()])
+    db.execute('DELETE FROM costs');db.commit()
+    target=sqlite3.connect(tmp_path/'profit.db');db.backup(target);target.close()
+    monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
+    app=AppTest.from_file('app.py').run()
+    assert not app.exception
+    metrics={metric.label:metric.value for metric in app.metric}
+    assert metrics['Начислено Ozon']=='395,00 ₽'
+    assert metrics['Реализация покупателям']=='500,00 ₽'
+    assert metrics['Чистая прибыль · предварительно']=='Нужна себестоимость'
+    assert any('на дату продажи' in warning.value for warning in app.warning)
+    assert any('Дата продажи' in frame.value.columns for frame in app.dataframe)
