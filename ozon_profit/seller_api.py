@@ -1,6 +1,7 @@
 """Read-only Seller API transport and complete-period staging.
 
-Endpoint contracts require live verification against current official docs.
+Migrated using October 2026 published OpenAPI mirrors (see API_MIGRATION.md).
+Live account verification is still required.
 No API response changes the validated accounting ledger in this version.
 """
 from datetime import date, datetime, time, timedelta, timezone
@@ -14,7 +15,7 @@ from .core import money
 from .credentials import validate
 
 BASE='https://api-seller.ozon.ru'
-ENDPOINTS={'finance':'/v3/finance/transaction/list','fbo':'/v2/posting/fbo/list','fbs':'/v3/posting/fbs/list'}
+ENDPOINTS={'finance':'/v1/finance/accrual/by-day','types':'/v1/finance/accrual/types','fbo':'/v3/posting/fbo/list','fbs':'/v4/posting/fbs/list'}
 
 
 class ApiError(Exception):
@@ -38,7 +39,7 @@ class ApiHttpError(ApiError):
 
 
 def iso(value):
-    return value.astimezone(timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
+    return value.astimezone(timezone.utc).isoformat(timespec='microseconds' if value.microsecond else 'seconds').replace('+00:00','Z')
 
 
 def windows(start,end,max_days=28):
@@ -50,7 +51,7 @@ def windows(start,end,max_days=28):
         # UI dates are interpreted in Moscow (UTC+3), avoiding host timezone dependence.
         moscow=timezone(timedelta(hours=3))
         a=datetime.combine(current,time.min,moscow)
-        b=datetime.combine(last,time.max,moscow).replace(microsecond=0)
+        b=datetime.combine(last,time.max,moscow)
         yield current,last,iso(a),iso(b)
         current=last+timedelta(days=1)
 
@@ -60,6 +61,7 @@ class SellerClient:
         self.client_id,self._api_key=validate(client_id,api_key)
         self.session=session or requests.Session()
         self.sleep=sleep
+        self._accrual_types=None
 
     def __repr__(self):return '<SellerClient credentials=hidden>'
 
@@ -109,17 +111,18 @@ class SellerClient:
             try:
                 data=response.json(parse_float=Decimal)
             except (ValueError,TypeError):raise ApiError('Ozon вернул ответ неизвестного формата') from None
-            if not isinstance(data,dict) or 'result' not in data:
+            if not isinstance(data,dict) or 'code' in data or 'error' in data:
                 raise ApiError('Изменился формат ответа Ozon. Загрузка остановлена без изменения данных.')
-            return data['result']
+            return data
         raise ApiError('Не удалось выполнить запрос Ozon')
 
     def diagnose(self,day):
         first,last,since,to=next(windows(day,day))
         payloads={
-            'finance':{'filter':{'date':{'from':since,'to':to},'operation_type':[],'posting_number':'','transaction_type':'all'},'page':1,'page_size':1},
-            'fbo':{'dir':'ASC','filter':{'since':since,'to':to},'limit':1,'offset':0,'with':{'analytics_data':False,'financial_data':False}},
-            'fbs':{'dir':'ASC','filter':{'since':since,'to':to},'limit':1,'offset':0,'with':{'analytics_data':False,'financial_data':False}},
+            'finance':{'date':day.isoformat(),'last_id':''},
+            'types':{},
+            'fbo':posting_payload(since,to),
+            'fbs':posting_payload(since,to),
         }
         statuses=[]
         for name,endpoint in ENDPOINTS.items():
@@ -131,66 +134,124 @@ class SellerClient:
             statuses.append({'Раздел':name.upper(),'Метод':'POST '+endpoint,'Результат':status})
         return statuses
 
+    def accrual_types(self):
+        if self._accrual_types is None:
+            raw=self.post(ENDPOINTS['types'],{})
+            items=raw.get('accrual_types')
+            if not isinstance(items,list):raise ApiError('Изменился формат справочника начислений Ozon')
+            result={}
+            for item in items:
+                if not isinstance(item,dict) or item.get('id') is None or not isinstance(item.get('name'),str):
+                    raise ApiError('Не удалось разобрать справочник начислений')
+                identifier=str(item['id'])
+                if identifier in result:raise ApiError('Повтор типа начисления в справочнике')
+                result[identifier]=item['name']
+            self._accrual_types=result
+        return self._accrual_types
+
     def finances(self,since,to):
-        result=[];seen=set();expected=None
-        for page in range(1,10001):
-            raw=self.post(ENDPOINTS['finance'],{'filter':{'date':{'from':since,'to':to},'operation_type':[],'posting_number':'','transaction_type':'all'},'page':page,'page_size':1000})
-            if not isinstance(raw,dict) or not isinstance(raw.get('operations'),list):raise ApiError('Изменился формат финансовых операций')
-            count=raw.get('page_count');total=raw.get('row_count')
-            if not isinstance(count,int) or isinstance(count,bool) or count<0 or not isinstance(total,int) or isinstance(total,bool) or total<0:
-                raise ApiError('В ответе финансов нет корректного количества страниц/строк')
-            if expected is None:expected=(count,total)
-            elif expected!=(count,total):raise ApiError('Финансовые данные менялись во время загрузки. Повторите обновление.')
-            for item in raw['operations']:
-                cleaned=clean_finance(item)
-                if cleaned['id'] in seen:raise ApiError('Ozon повторил операцию на нескольких страницах; обновление отменено')
-                seen.add(cleaned['id']);result.append(cleaned)
-            if page>=count:
-                if len(result)!=total:raise ApiError('Получены не все финансовые операции. Данные не сохранены.')
-                return result
-            if not raw['operations']:raise ApiError('Пустая промежуточная страница финансов')
-        raise ApiError('Слишком много страниц финансов')
+        moscow=timezone(timedelta(hours=3))
+        try:
+            first=datetime.fromisoformat(since.replace('Z','+00:00')).astimezone(moscow).date()
+            last=datetime.fromisoformat(to.replace('Z','+00:00')).astimezone(moscow).date()
+        except ValueError:raise ApiError('Некорректный период финансов') from None
+        if first<date(2022,1,1) or last<first:raise ApiError('Начисления доступны с 01.01.2022; проверьте период')
+        types=self.accrual_types()
+        result=[];seen=set();day=first
+        while day<=last:
+            cursor='';cursors=set()
+            for _ in range(10000):
+                raw=self.post(ENDPOINTS['finance'],{'date':day.isoformat(),'last_id':cursor})
+                # Empty repeated fields can be omitted by protobuf JSON serialization.
+                items=raw.get('accruals',[]);next_cursor=raw.get('last_id','')
+                if not isinstance(items,list) or not isinstance(next_cursor,str):raise ApiError('Изменился формат начислений за день')
+                if 'result' in raw or (raw and not {'accruals','last_id'}.intersection(raw)):
+                    raise ApiError('Ожидался новый формат начислений accruals/last_id')
+                for item in items:
+                    cleaned=clean_finance(item,day,types)
+                    if cleaned['id'] in seen:raise ApiError('Ozon повторил начисление на нескольких страницах; обновление отменено')
+                    seen.add(cleaned['id']);result.append(cleaned)
+                if not next_cursor:break
+                if next_cursor in cursors or not items:raise ApiError('Курсор финансов не продвигается. Обновление отменено.')
+                cursors.add(next_cursor);cursor=next_cursor
+            else:raise ApiError('Слишком много страниц начислений за день')
+            day+=timedelta(days=1)
+        return result
 
     def postings(self,kind,since,to):
         if kind not in ('fbo','fbs'):raise ApiError('Неизвестная схема работы')
-        result=[];seen=set();limit=1000;offset=0
+        result=[];seen=set();cursor='';cursors=set()
         for _ in range(10000):
-            payload={'dir':'ASC','filter':{'since':since,'to':to},'limit':limit,'offset':offset,
-                     'with':{'analytics_data':False,'financial_data':False}}
-            raw=self.post(ENDPOINTS[kind],payload)
-            if kind=='fbo':
-                if not isinstance(raw,list):raise ApiError('Изменился формат заказов FBO')
-                items=raw;more=len(items)==limit
-            else:
-                if not isinstance(raw,dict) or not isinstance(raw.get('postings'),list) or not isinstance(raw.get('has_next'),bool):
-                    raise ApiError('Изменился формат заказов FBS')
-                items=raw['postings'];more=raw['has_next']
+            raw=self.post(ENDPOINTS[kind],posting_payload(since,to,cursor,limit=100))
+            items=raw.get('postings',[]);more=raw.get('has_next',False);next_cursor=raw.get('cursor','')
+            if 'result' in raw or (raw and not {'postings','has_next','cursor'}.intersection(raw)) or not isinstance(items,list) or not isinstance(more,bool) or not isinstance(next_cursor,str):
+                raise ApiError('Изменился формат отправлений Ozon')
             for item in items:
                 clean=clean_posting(item,kind)
                 if clean['posting_number'] in seen:raise ApiError('Ozon повторил отправление на нескольких страницах')
                 seen.add(clean['posting_number']);result.append(clean)
             if not more:return result
-            if not items:raise ApiError('Пустая промежуточная страница заказов')
-            offset+=len(items)
+            if not items or not next_cursor or next_cursor in cursors:raise ApiError('Курсор отправлений не продвигается')
+            cursors.add(next_cursor);cursor=next_cursor
         raise ApiError('Слишком много страниц заказов; сузьте период')
 
 
-def clean_finance(item):
+def posting_payload(since,to,cursor='',limit=1):
+    return {'cursor':cursor,'sort_dir':'ASC','filter':{'since':since,'to':to},'limit':limit,
+            'with':{'analytics_data':False,'financial_data':False,'legal_info':False}}
+
+
+def _rub_money(value):
+    if not isinstance(value,dict) or value.get('amount') is None or value.get('currency')!='RUB':
+        raise ValueError('Ожидалась сумма в RUB')
+    return {'amount':str(money(value['amount'])),'currency':'RUB'}
+
+
+def _fee(value):
+    if not isinstance(value,dict):raise ValueError('Некорректная услуга')
+    return {'type_id':value.get('type_id'),'accrued':_rub_money(value.get('accrued'))}
+
+
+def clean_finance(item,expected_day,types):
     try:
-        identifier=str(item['operation_id'])
-        if not identifier or identifier=='None':raise ValueError()
-        day=datetime.fromisoformat(str(item['operation_date']).replace('Z','+00:00')).date().isoformat()
-        amount=money(item['amount'])
-        if item['amount'] is None:raise ValueError()
-        # Whitelist fields: no customer names, addresses, headers or API credentials.
-        payload={k:item.get(k) for k in ['operation_id','operation_type','operation_type_name','operation_date','type','accruals_for_sale','sale_commission','amount']}
+        identifier=str(item['accrual_id'])
+        if not identifier.isascii() or not identifier.isdigit():raise ValueError('Нет ID начисления')
+        day=date.fromisoformat(item['date'])
+        if day!=expected_day:raise ValueError('Дата начисления отличается от запрошенной')
+        total=_rub_money(item['total_amount'])
+        category=item['accrued_category']
+        labels={'POSTING':'Начисление по отправлению','ITEM':'Начисление по товару','NON_ITEM':'Общее начисление магазина','CONTAINER_FEES':'Контейнерные услуги','UNSPECIFIED':'Неопределённое начисление'}
+        if category not in labels:raise ValueError('Новая категория начисления')
+        payload={'accrual_id':identifier,'operation_date':str(day),'operation_type':category,
+                 'operation_type_name':labels[category],'total_amount':total,'items':[],
+                 'posting':{'posting_number':str(item.get('unit_number') or '') if category=='POSTING' else ''}}
         posting=item.get('posting') or {}
-        payload['posting']={k:posting.get(k) for k in ['posting_number','delivery_schema','order_date']}
-        payload['items']=[{k:p.get(k) for k in ['sku','name']} for p in item.get('items',[])]
-        payload['services']=[{k:s.get(k) for k in ['name','price']} for s in item.get('services',[])]
-        return {'id':identifier,'day':day,'amount':str(amount),'payload':payload}
+        if category=='POSTING':
+            payload['posting']['delivery_schema']=posting.get('delivery_schema')
+            for product in posting.get('products',[]):
+                clean={'sku':product.get('sku')}
+                commission=product.get('commission')
+                if commission:
+                    # These are explanatory components; do NOT sum them with total_amount.
+                    clean['commission']={k:_rub_money(commission[k]) for k in
+                        ('bonus','coinvestment','commission','sale_amount','sale_commission','sale_price','seller_price') if commission.get(k) is not None}
+                delivery=product.get('delivery')
+                if delivery:
+                    clean['delivery']={'services':[_fee(f) for f in delivery.get('services',[])]}
+                    if delivery.get('total_accrued') is not None:clean['delivery']['total_accrued']=_rub_money(delivery['total_accrued'])
+                payload['items'].append(clean)
+        elif category=='NON_ITEM':
+            fee=_fee(item.get('non_item_fee'));payload['non_item_fee']=fee
+            payload['operation_type_name']=types.get(str(fee['type_id']),labels[category])
+        elif category=='ITEM':
+            source=item.get('item_fees') or {}
+            for p in source.get('fees',[]):payload['items'].append({'sku':p.get('sku'),'fees':[_fee(f) for f in p.get('fees',[])]})
+        elif category=='CONTAINER_FEES':
+            source=item.get('container_fees') or {}
+            payload['container_fees']=[_fee(f) for f in source.get('fees',[])]
+        return {'id':'accrual:'+identifier,'day':str(day),'amount':total['amount'],'payload':payload}
     except (KeyError,TypeError,ValueError,AttributeError):
-        raise ApiError('Не удалось разобрать финансовую операцию. Данные не сохранены.') from None
+        raise ApiError('Не удалось разобрать начисление: проверьте новый формат, дату и валюту RUB. Данные не сохранены.') from None
 
 
 def clean_posting(item,kind):
