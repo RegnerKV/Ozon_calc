@@ -17,8 +17,9 @@ def posting_accrual(identifier=1,sale=500,bonus=100,partner=5,original=-200,pric
     return {'accrual_id':identifier,'date':START,'accrued_category':'POSTING','unit_number':'100-200-1',
         'total_amount':m(sale+bonus+partner+original+delivery),
         'posting':{'delivery_schema':'FBS','products':[{'sku':987,
-            'commission':{'sale_amount':m(sale),'sale_price':m(price),'bonus':m(bonus),
-                'coinvestment':m(partner),'sale_commission':m(original),'commission':m(original+bonus+partner)},
+            'commission':{'sale_amount':m(sale+bonus+partner),'sale_price':m(price),
+                'seller_price':m((sale+bonus+partner)/abs(sale/price) if price and sale else 0),'bonus':m(bonus),
+                'coinvestment':m(partner),'sale_commission':m(original),'commission':m(original)},
             'delivery':{'total_accrued':m(delivery),'services':[{'type_id':8,'accrued':m(delivery)}]}}]}}
 
 
@@ -110,6 +111,7 @@ def test_missing_quantity_blocks_source_switch_and_preserves_excel(db):
     excel(db)
     with db:db.execute('DELETE FROM api_postings')
     item=posting_accrual();del item['posting']['products'][0]['commission']['sale_price']
+    del item['posting']['products'][0]['commission']['seller_price']
     stage(db,[item]);p=project(db,START,END)
     assert p.issues
     with pytest.raises(ValueError):promote(db,START,END,enable=True)
@@ -143,6 +145,7 @@ def test_returns_do_not_restore_inventory_or_estimate_partial_quantity(db):
     r=preview(db,p)
     assert r['costs']==0 and r['revenue']==-250 and r['tax']==0
     del item['posting']['products'][0]['commission']['sale_price']
+    del item['posting']['products'][0]['commission']['seller_price']
     stage(db,[item]);assert project(db,START,END).issues
 
 
@@ -275,7 +278,7 @@ def test_single_cost_file_can_be_imported_for_api_products(db,tmp_path,monkeypat
 
 def test_reported_final_commission_with_markup_is_not_lost(db):
     item=posting_accrual()
-    item['posting']['products'][0]['commission']['commission']=m(-100)
+    item['posting']['products'][0]['commission']['commission']=m(-205)
     item['total_amount']=m(390)
     stage(db,[item]);p=project(db,START,END)
     assert not p.issues
@@ -296,7 +299,7 @@ def test_reported_delivery_total_replaces_service_breakdown(db):
 
 def test_neither_known_decomposition_can_plug_arbitrary_difference(db):
     item=posting_accrual()
-    item['posting']['products'][0]['commission']['commission']=m(-100)
+    item['posting']['products'][0]['commission']['commission']=m(-205)
     item['total_amount']=m(777)
     stage(db,[item]);p=project(db,START,END)
     assert p.issues
@@ -320,3 +323,72 @@ def test_diagnostic_packet_whitelists_fields_and_does_not_mutate(db):
     assert packet['accruals'][0]['products'][0]['commission']['sale_commission']=='-200'
     assert packet['postings'][0]['products'][0]['offer_id']=='demo'
     assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0
+
+
+def test_gross_sale_is_split_before_tax_not_added_twice(db):
+    stage(db,[posting_accrual()])
+    p=project(db,START,END)
+    amounts={r['kind']:D(r['amount']) for r in p.rows}
+    assert amounts['sale']==500  # raw sale_amount is 605
+    assert amounts['points']==100 and amounts['partner']==5
+    assert amounts['commission']==-200
+    assert sum(D(r['amount']) for r in p.rows)==395
+    assert preview(db,p,'sales')['tax']==20
+    assert preview(db,p,'sales_partner')['tax']==D('20.20')
+    assert preview(db,p,'sales_points')['tax']==24
+    assert preview(db,p,'sales_points_partner')['tax']==D('24.20')
+
+
+def test_unknown_cost_blocks_activation_even_if_structurally_balanced(db):
+    stage(db,[posting_accrual()])
+    with db:db.execute('DELETE FROM costs')
+    assert preview(db,project(db,START,END))['missing']==1
+    with pytest.raises(ValueError,match='себестоимость'):promote(db,START,END,enable=True)
+    assert get_setting(db,'api_profit_enabled')!='1'
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0
+
+
+def test_zero_customer_price_still_spends_inventory(db):
+    item=posting_accrual(sale=0,bonus=100,partner=5,original=0,price=0,delivery=0)
+    item['posting']['products'][0]['commission']['seller_price']=m('52.5')
+    stage(db,[item]);p=project(db,START,END)
+    assert not p.issues
+    r=preview(db,p)
+    assert r['revenue']==0 and r['net']==105 and r['costs']==D('160.010')
+    assert r['tax']==0
+
+
+def test_standalone_points_do_not_create_fake_customer_return(db):
+    item=posting_accrual(sale=0,bonus=10,partner=0,original=0,price=0,delivery=0)
+    item['posting']['products'][0]['commission']['sale_amount']=m(0)
+    stage(db,[item]);p=project(db,START,END)
+    assert not p.issues
+    assert all(row['kind'] not in ('sale','return') for row in p.rows)
+    r=preview(db,p)
+    assert r['revenue']==0 and r['costs']==0 and r['net']==10
+
+
+def test_legacy_gross_projection_is_marked_until_recomputed(db):
+    import_operations(db,b'old-model','Ozon Seller API',[
+        dict(id='api-ledger:old',day=START,kind='sale',amount=605,qty=2,sku='demo',order_no='100-200-1')])
+    assert calculate(db,START,END)['stale_api']
+    stage(db,[posting_accrual()]);promote(db,START,END)
+    r=calculate(db,START,END)
+    assert not r['stale_api'] and r['revenue']==500 and r['tax']==20
+
+
+def test_missing_cost_ui_hides_profit_and_blocks_activation(db,tmp_path,monkeypatch):
+    import sqlite3
+    from streamlit.testing.v1 import AppTest
+    stage(db,[posting_accrual()])
+    with db:db.execute('DELETE FROM costs')
+    copy=sqlite3.connect(tmp_path/'profit.db');db.backup(copy);copy.close()
+    monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
+    app=AppTest.from_file('app.py').run()
+    app.sidebar.radio[0].set_value('Подключение Ozon').run()
+    app.date_input(key='api_since').set_value(date.fromisoformat(START))
+    app.date_input(key='api_until').set_value(date.fromisoformat(END)).run()
+    assert not app.exception
+    assert any(m.label=='Предварительная прибыль' and m.value=='Нужна себестоимость' for m in app.metric)
+    app.checkbox(key='api_profit_approve').check().run()
+    assert app.button(key='api_profit_enable').disabled

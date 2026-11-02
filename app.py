@@ -65,18 +65,19 @@ if page == 'Обзор':
     cols = st.columns(3)
     for col, label, a, b in zip(cols, ['Сегодня', 'За 7 дней', 'С начала месяца'], [today, today-timedelta(days=6), today.replace(day=1)], [today]*3):
         calc = calculate(db, a, b)
-        col.metric(label, show_money(calc['profit']) if calc['count'] else 'Нет данных')
+        col.metric(label, ('Нужен пересчёт' if calc['stale_api'] else 'Нужна себестоимость' if calc['missing'] else show_money(calc['profit'])) if calc['count'] else 'Нет данных')
     st.caption('Карточки выше используют текущую дату компьютера. Данные выбранного периода — ниже.')
     if not result['count']:
         st.info('За выбранный период нет операций. Откройте «Загрузка Excel» и выберите даты отчёта в боковой панели.')
+    if result['stale_api']:st.error('Этот период рассчитан прежней версией API. Откройте «Подключение Ozon» и пересчитайте прибыль после исправления налоговой базы.')
     if result['missing'] or result['estimated']:
         st.error(f'Неполный расчёт: {result["missing"]} операций без точной базы себестоимости; {result["estimated"]} — с оценочной себестоимостью. Показанная прибыль может быть завышена.')
     if result['net_mode']:
         st.error('Загружены только итоговые начисления. В них нет данных для выручки, себестоимости и стандартной налоговой базы. Показан денежный результат начислений, а не прибыль магазина.')
     cols = st.columns(4)
     for col, title, key in zip(cols, ['Начисления после удержаний', 'Выручка продаж за вычетом возвратов', 'Известная себестоимость', 'Расчётный налог'], ['net','revenue','costs','tax']):
-        col.metric(title, show_money(result[key]))
-    st.metric('Предварительная прибыль / неполный результат' if result['incomplete'] else 'Предварительная прибыль', show_money(result['profit']))
+        col.metric(title, 'Нужен пересчёт' if result['stale_api'] and key!='net' else show_money(result[key]))
+    st.metric('Предварительная прибыль / неполный результат' if result['incomplete'] else 'Предварительная прибыль', 'Нужен пересчёт' if result['stale_api'] else 'Нужна себестоимость' if result['missing'] else show_money(result['profit']))
     st.caption(f'Удержания без возврата выручки: {show_money(result["expenses"])}. Налоговая база: {get_setting(db,"tax_base","sales_points")}.')
     if result['revenue'] > 0:
         st.write(f'Рентабельность по выручке: {result["profit"]/result["revenue"]*100:.1f}% • Доля удержаний: {result["expenses"]/result["revenue"]*100:.1f}%')

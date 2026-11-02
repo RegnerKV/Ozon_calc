@@ -63,9 +63,9 @@ def project(db,start,end):
     for raw in records:
         payload=json.loads(raw['payload']);order=payload.get('posting',{}).get('posting_number','')
         category=payload.get('operation_type');actual=money(raw['amount']);net+=actual
-        parts=[];final_commissions={};final_deliveries={}
+        parts=[]
         def emit(suffix,kind,amount,article='',name='',qty=ZERO):
-            if amount==0:return
+            if amount==0 and kind not in ('sale','return'):return
             parts.append(dict(id=PREFIX+raw['id']+':'+suffix,day=raw['day'],order_no=order,
                 sku=article,name=names.get(article,name),kind=kind,amount=str(amount),qty=str(qty)))
         def fee(suffix,value,article='',name=''):
@@ -82,42 +82,43 @@ def project(db,start,end):
                     article=next((str(p['offer_id']) for p in product_lines if p.get('offer_id')),links.get(sku,''))
                     name=next((str(p.get('name') or '') for p in product_lines),'')
                     available=sum((money(p['quantity']) for p in product_lines),ZERO)
-                    commission=item.get('commission') or {};sale=_value(commission,'sale_amount')
-                    if sale:
+                    commission=item.get('commission') or {}
+                    gross=_value(commission,'sale_amount')
+                    bonus=_value(commission,'bonus');partner=_value(commission,'coinvestment')
+                    # by-day sale_amount includes the two reimbursements. Split
+                    # buyer realization out once; this also preserves tax choices.
+                    sale=gross-bonus-partner if gross else ZERO
+                    if gross*sale<0:raise ValueError('Возмещения меняют знак реализации; нужна проверка начисления')
+                    if gross:
                         if not article:raise ValueError('Не найден артикул: загрузите отправления или исходные отчёты с сопоставлением SKU')
-                        price=_value(commission,'sale_price');qty=ZERO
-                        if price and abs(sale/price)==abs(sale/price).to_integral_value():qty=abs(sale/price)
-                        elif sale>0 and available>0 and sale_events[(order,sku)]==1:qty=available
+                        price=_value(commission,'sale_price');seller_price=_value(commission,'seller_price');qty=ZERO
+                        if seller_price and abs(gross/seller_price)==abs(gross/seller_price).to_integral_value():qty=abs(gross/seller_price)
+                        elif price and abs(sale/price)==abs(sale/price).to_integral_value():qty=abs(sale/price)
+                        elif gross>0 and available>0 and sale_events[(order,sku)]==1:qty=available
                         if qty<=0:raise ValueError('Не определено количество проданных/возвращённых единиц')
                         if available>0:
                             ordered[(order,article)]=available
-                            if sale>0:sold[(order,article)]+=qty
+                            if gross>0:sold[(order,article)]+=qty
                             elif qty>available:raise ValueError('Возвращено больше количества в отправлении')
                         elif sale_events[(order,sku)]>1:raise ValueError('Повторные продажи без состава отправления требуют проверки')
-                        emit(f'{index}:sale','sale' if sale>0 else 'return',sale,article,name,qty)
-                    bonus=_value(commission,'bonus');partner=_value(commission,'coinvestment')
+                        emit(f'{index}:sale','sale' if gross>0 else 'return',sale,article,name,qty)
                     emit(f'{index}:points','points' if bonus>=0 else 'points_reversal',bonus,article,name)
                     emit(f'{index}:partner','partner',partner,article,name)
-                    # Both original and final commission are reported by Ozon.
-                    # A final-based candidate retains points/partner tax categories
-                    # by splitting them out of that reported final amount.
                     if commission:
-                        has_original=commission.get('sale_commission') is not None
-                        has_final=commission.get('commission') is not None
-                        if not has_original and not has_final:
-                            raise ValueError('В начислении отсутствуют исходная и итоговая комиссии')
-                        original=_value(commission,'sale_commission') if has_original else _value(commission,'commission')-bonus-partner
-                        emit(f'{index}:commission','commission' if original<=0 else 'service_refund',original,article,name)
-                        if has_final:final_commissions[f'{index}:commission']=(_value(commission,'commission')-bonus-partner,article,name)
+                        # Reported final commission is a fee, not a container from
+                        # which to subtract the reimbursements a second time.
+                        if commission.get('commission') is not None:
+                            charge=_value(commission,'commission')
+                        elif commission.get('sale_commission') is not None:
+                            charge=_value(commission,'sale_commission')
+                        else:raise ValueError('В начислении отсутствует комиссия')
+                        emit(f'{index}:commission','commission' if charge<=0 else 'service_refund',charge,article,name)
                     delivery=item.get('delivery') or {}
                     if delivery.get('total_accrued') is not None:
-                        final_deliveries[str(index)]=(_value(delivery,'total_accrued'),article,name)
-                    services=delivery.get('services',[])
-                    if services:
-                        for j,value in enumerate(services):fee(f'{index}:delivery:{j}',value,article,name)
-                    elif delivery.get('total_accrued') is not None:
                         value=_value(delivery,'total_accrued')
                         emit(f'{index}:delivery','logistics' if value<=0 else 'logistics_refund',value,article,name)
+                    else:
+                        for j,value in enumerate(delivery.get('services',[])):fee(f'{index}:delivery:{j}',value,article,name)
             elif category=='NON_ITEM':fee('service',payload.get('non_item_fee') or {})
             elif category=='ITEM':
                 for i,item in enumerate(payload.get('items',[])):
@@ -126,37 +127,22 @@ def project(db,start,end):
             elif category=='CONTAINER_FEES':
                 for i,value in enumerate(payload.get('container_fees',[])):fee(f'container:{i}',value)
             elif actual!=0:raise ValueError('Неизвестная категория начисления')
-            original_sum=sum((money(r['amount']) for r in parts),ZERO)
-            final_parts=[dict(r) for r in parts]
-            for suffix,(amount,article,name) in final_commissions.items():
-                identifier=PREFIX+raw['id']+':'+suffix
-                final_parts=[r for r in final_parts if r['id']!=identifier]
-                if amount:
-                    final_parts.append(dict(id=identifier,day=raw['day'],order_no=order,sku=article,
-                        name=names.get(article,name),kind='commission' if amount<=0 else 'service_refund',amount=str(amount),qty='0'))
-            for index,(amount,article,name) in final_deliveries.items():
-                prefix=PREFIX+raw['id']+':'+index+':delivery'
-                final_parts=[r for r in final_parts if not (r['id']==prefix or r['id'].startswith(prefix+':'))]
-                if amount:
-                    final_parts.append(dict(id=prefix+':total',day=raw['day'],order_no=order,sku=article,
-                        name=names.get(article,name),kind='logistics' if amount<=0 else 'logistics_refund',amount=str(amount),qty='0'))
-            final_sum=sum((money(r['amount']) for r in final_parts),ZERO)
-            if final_sum==actual:parts=final_parts
-            elif original_sum!=actual:
-                raise ValueError(f'Детализация не совпала с итогом: итог API {actual}; по итоговым комиссиям/доставке {final_sum}; по исходным компонентам {original_sum}. Нужна проверка данных начисления.')
+            explained=sum((money(r['amount']) for r in parts),ZERO)
+            if explained!=actual:
+                raise ValueError(f'Детализация не совпала с итогом: итог API {actual}; продажи, возмещения, комиссии и доставка {explained}. Нужна проверка данных начисления.')
             rows.extend(parts)
         except ValueError as exc:
             issues.append(f'{raw["day"]}, {raw["id"]}: {exc}')
     for (order,article),quantity in sold.items():
         earlier=sum((money(r[0]) for r in db.execute("SELECT qty FROM operations WHERE order_no=? AND sku=? AND kind='sale' AND NOT(day BETWEEN ? AND ?)",(order,article,start,end))),ZERO)
         if quantity+earlier>ordered[(order,article)]:issues.append(f'Отправление {order}: количество продаж превышает состав заказа, возможна повторная выручка/корректировка.')
-    encoded=json.dumps({'start':start,'end':end,'rows':rows},sort_keys=True,ensure_ascii=False).encode()
+    encoded=json.dumps({'model':'gross-v2','start':start,'end':end,'rows':rows},sort_keys=True,ensure_ascii=False).encode()
     digest='api-ledger:'+hashlib.sha256(encoded).hexdigest()
     return Projection(start,end,rows,issues,net,digest)
 
 
 def _replace(db,projection):
-    db.execute('INSERT OR IGNORE INTO imports(digest,name) VALUES(?,?)',(projection.digest,'Ozon Seller API'))
+    db.execute('INSERT OR IGNORE INTO imports(digest,name) VALUES(?,?)',(projection.digest,'Ozon Seller API (gross-v2)'))
     db.execute(f'DELETE FROM operations WHERE day BETWEEN ? AND ? AND {OWNED}',(projection.start,projection.end))
     db.executemany('INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?)',[
         (r['id'],r['day'],r['order_no'],r['sku'],r['name'],r['kind'],r['amount'],r['qty'],projection.digest) for r in projection.rows])
@@ -180,6 +166,9 @@ def promote(db,start,end,tax_base=None,enable=False):
         db.execute('BEGIN IMMEDIATE')
         projection=project(db,start,end)
         if projection.issues:raise ValueError('Не удалось сопоставить все начисления. Предыдущий расчёт сохранён; откройте проверку прибыли API.')
+        for row in projection.rows:
+            if row['kind']=='sale' and not db.execute('SELECT 1 FROM costs WHERE sku=? AND since<=? LIMIT 1',(row['sku'],row['day'])).fetchone():
+                raise ValueError('Не заполнена себестоимость проданного изделия на дату продажи. Сначала заполните справочник; прежний расчёт сохранён.')
         # Apply exactly the core ledger's validation before replacing any real data.
         if projection.rows:
             validator=connect(':memory:')

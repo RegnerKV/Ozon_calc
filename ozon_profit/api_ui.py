@@ -172,12 +172,14 @@ def profit_ui(db,start,end):
     else:
         result=preview(db,projection,selected)
         labels=[('Начисления','net'),('Реализация','revenue'),('Себестоимость','costs'),('Налоговый резерв','tax'),('Предварительная прибыль','profit')]
-        for col,(label,key) in zip(st.columns(len(labels)),labels):col.metric(label,f'{rub(result[key]):,.2f} ₽'.replace(',',' '))
+        for col,(label,key) in zip(st.columns(len(labels)),labels):
+            value='Нужна себестоимость' if key=='profit' and result['missing'] else f'{rub(result[key]):,.2f} ₽'.replace(',',' ')
+            col.metric(label,value)
         if result['missing'] or result['estimated']:
             st.warning(f'Неполный расчёт: {result["missing"]} продаж без стоимости, {result["estimated"]} с примерной себестоимостью. Исправьте справочник; показанная прибыль может быть завышена.')
-        st.caption('Вычисление по API проверено по итогу начисления: итоговая комиссия и доставка используются без повторного сложения с их детализацией; баллы и партнёрские выплаты выделяются для налоговой базы. Возврат выручки не означает физический возврат товара в запас.')
+        st.caption('Реализация покупателям = sale_amount API минус баллы и программы партнёров. Эти возмещения учитываются отдельно один раз; итоговая комиссия и доставка не складываются со своей детализацией. Выбранная налоговая база применяется к выделенным видам дохода. Возврат выручки не означает физический возврат товара в запас.')
         approved=st.checkbox('Использовать API для прибыли: заменить операции Ozon из Excel за выбранный период и пересчитывать обновляемые периоды после следующих загрузок. Предыдущие операции сохранить в резервной копии.',key='api_profit_approve')
-        if st.button('Включить прибыль API',disabled=not approved,key='api_profit_enable'):
+        if st.button('Включить прибыль API',disabled=not approved or result['missing']>0,key='api_profit_enable'):
             try:
                 promote(db,start,end,tax_base=selected,enable=True)
                 st.success('Прибыль API включена. Откройте «Обзор» и выберите этот период. Следующие успешные обновления будут пересчитывать прибыль автоматически.')
@@ -202,7 +204,7 @@ def cost_upload_ui(db,since):
     for row in db.execute('SELECT l.sku,p.name FROM product_links l LEFT JOIN products p ON p.sku=l.sku'):
         products.setdefault(row[0],{'sku':row[0],'name':row[1] or row[0]})
     if not products:return
-    with st.expander('Загрузить себестоимость для товаров API'):
+    with st.expander('Загрузить себестоимость для товаров API',expanded=not bool(db.execute('SELECT 1 FROM costs LIMIT 1').fetchone())):
         st.caption('Достаточно одного файла «Себестоимость.xlsx». Итоги с упаковкой читаются из листа «Украшения». Уже сохранённая история остаётся; запись на ту же дату заменяется. Оценки «Малин» по «Рыбе» останутся примерными.')
         uploaded=st.file_uploader('Файл себестоимости',type=['xlsx'],key='api_cost_file')
         if not uploaded:return

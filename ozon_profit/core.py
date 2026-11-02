@@ -216,7 +216,8 @@ def calculate(db, start, end):
     totals['tax_adjustment'] = totals['tax'] - raw_tax
     totals['profit'] = totals['net'] - totals['costs'] - totals['tax']
     totals['net_mode'] = get_setting(db, 'ledger_mode') == 'net'
-    totals['incomplete'] = bool(totals['missing'] or totals['estimated'] or totals['net_mode'])
+    totals['stale_api'] = bool(db.execute("SELECT 1 FROM operations o JOIN imports i ON i.digest=o.source WHERE o.day BETWEEN ? AND ? AND o.id LIKE 'api-ledger:%' AND i.name='Ozon Seller API' LIMIT 1",(str(start),str(end))).fetchone())
+    totals['incomplete'] = bool(totals['missing'] or totals['estimated'] or totals['net_mode'] or totals['stale_api'])
     totals['details'] = details
     return totals
 
