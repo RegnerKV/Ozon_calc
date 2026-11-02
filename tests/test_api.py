@@ -195,3 +195,36 @@ def test_native_windows_dpapi_roundtrip(tmp_path):
     credentials.save('123',TEST_KEY,target)
     assert TEST_KEY.encode() not in target.read_bytes()
     assert credentials.load(target)==('123',TEST_KEY)
+
+
+def test_404_identifies_endpoint_without_credentials_or_retry():
+    from ozon_profit.seller_api import ApiHttpError
+    api,session,_=client([Response(status=404)])
+    with pytest.raises(ApiHttpError) as caught:
+        api.finances('from','to')
+    assert caught.value.endpoint==ENDPOINTS['finance']
+    assert caught.value.status==404
+    assert 'POST /v3/finance/transaction/list' in str(caught.value)
+    assert TEST_KEY not in str(caught.value)
+    assert len(session.calls)==1
+
+
+def test_diagnostics_checks_all_methods_despite_404():
+    api,session,_=client([Response(status=404),Response([]),Response(status=403)])
+    rows=api.diagnose(date(2026,8,1))
+    assert len(rows)==3
+    assert '404' in rows[0]['Результат']
+    assert 'HTTP 200' in rows[1]['Результат']
+    assert '403' in rows[2]['Результат']
+    assert TEST_KEY not in json.dumps(rows)
+    assert [c[0] for c in session.calls]==['https://api-seller.ozon.ru'+p for p in ENDPOINTS.values()]
+
+
+def test_finance_only_sync_does_not_call_postings():
+    db=connect(':memory:')
+    api,session,_=client([finance_response([transaction()])])
+    stats=sync(db,api,date(2026,8,1),date(2026,8,10),schemes=())
+    assert stats['finance']==1 and stats['postings']==0
+    assert len(session.calls)==1
+    assert db.execute("SELECT value FROM settings WHERE key='api_components'").fetchone()[0]=='finance'
+    db.close()

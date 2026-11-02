@@ -19,7 +19,6 @@ def active_credentials():
 def run_update(db,start,end,schemes):
     pair=active_credentials()
     if not pair:raise ApiError('Сначала введите Client ID и ключ в разделе «Подключение Ozon».')
-    if not schemes:raise ApiError('Выберите хотя бы одну схему FBO/FBS')
     client=SellerClient(*pair)
     try:return sync(db,client,start,end,schemes)
     finally:client.close()
@@ -56,19 +55,41 @@ def connection_ui(db):
         st.session_state['_seller_pair']=None
         st.session_state.pop('_credential_message',None)
         st.success('Сохранённый ключ удалён. Чтобы отозвать доступ полностью, удалите ключ и в кабинете Ozon.')
+    st.subheader('Проверка доступа к методам')
+    st.caption('Выполняются три небольших запроса независимо друг от друга. Таблица покажет, какой именно адрес возвращает 404. Проверка не меняет базу и не показывает ключ или финансовые строки.')
+    if st.button('Проверить методы API',key='api_diagnose'):
+        current=active_credentials()
+        if not current:
+            st.error('Сначала сохраните Client ID и API-ключ.')
+        else:
+            client=SellerClient(*current)
+            try:
+                with st.spinner('Проверяем методы Ozon…'):
+                    statuses=client.diagnose(datetime.now(timezone(timedelta(hours=3))).date()-timedelta(days=1))
+                st.dataframe(pd.DataFrame(statuses),width='stretch',hide_index=True)
+            except ApiError as exc:
+                st.error(str(exc))
+            except Exception:
+                st.error('Проверка не завершена. Сохранённые данные не изменены.')
+            finally:
+                client.close()
     st.subheader('Проверочная загрузка')
     today=datetime.now(timezone(timedelta(hours=3))).date()
     first=st.date_input('Начало загрузки',today-timedelta(days=89),key='api_since')
     last=st.date_input('Конец загрузки',today,key='api_until')
     schemes=st.multiselect('Схемы работы',options=['fbo','fbs'],default=['fbo','fbs'],format_func=str.upper)
+    finance_only=st.checkbox('Загрузить только финансовые начисления, без отправлений',key='api_finance_only')
     if st.button('Загрузить данные Ozon',key='api_download'):
         try:
             with st.spinner('Загружаем финансы и отправления…'):
-                stats=run_update(db,first,last,schemes)
+                if not schemes and not finance_only:
+                    raise ApiError('Выберите FBO/FBS или включите загрузку только финансов.')
+                stats=run_update(db,first,last,() if finance_only else schemes)
             st.success(f'Получено финансовых операций: {stats["finance"]}; отправлений: {stats["postings"]}.')
         except ApiError as exc:st.error(str(exc))
         except Exception:st.error('Обновление не завершено. Проверьте соединение и настройки; ключи и ответы API в журнал не выводятся.')
-    st.caption('Последнее полное успешное обновление: '+get_setting(db,'api_last_success','ещё не было'))
+    st.caption('Последнее успешное обновление выбранных разделов: '+get_setting(db,'api_last_success','ещё не было'))
+    st.caption('Загруженные разделы: '+get_setting(db,'api_components','ещё не было'))
     st.subheader('Автоматическая загрузка')
     st.caption('По умолчанию отключена. Работает, пока открыто приложение и доступен ключ. Последние 90 дней запрашиваются заново, чтобы получить задержанные начисления. Для более старых корректировок выберите период вручную. Это проверочная загрузка, без пересчёта прибыли.')
     with st.form('api_auto'):

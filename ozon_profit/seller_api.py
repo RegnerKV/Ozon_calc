@@ -20,6 +20,20 @@ class ApiError(Exception):
     """Contains only local, non-secret messages. Never include request/response dumps."""
 
 
+class ApiHttpError(ApiError):
+    def __init__(self,endpoint,status):
+        self.endpoint=endpoint
+        self.status=int(status)
+        message=f'POST {endpoint}: HTTP {self.status}. '
+        if self.status==404:
+            message+='Адрес метода не найден. Требуется проверить версию метода; это не доказательство неверного ключа.'
+        elif self.status in (401,403):
+            message+='Доступ отклонён. Проверьте ключ и разрешения; необходимость Premium не установлена.'
+        else:
+            message+='Запрос не выполнен. Требуется проверить параметры и актуальность метода.'
+        super().__init__(message)
+
+
 def iso(value):
     return value.astimezone(timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
 
@@ -61,7 +75,7 @@ class SellerClient:
                 if attempt<3:self.sleep(2**attempt);continue
                 raise ApiError('Нет соединения с Ozon. Проверьте интернет и доступ к api-seller.ozon.ru. Сохранённые данные не изменены.') from None
             if response.status_code in (401,403):
-                raise ApiError('Ozon отказал в доступе (401/403). Проверьте Client ID, ключ, разрешения чтения и сетевые ограничения. Это само по себе не означает, что нужен Premium.')
+                raise ApiHttpError(endpoint,response.status_code)
             if response.status_code==429 or 500<=response.status_code<600:
                 if attempt<3:
                     try:delay=float(response.headers.get('Retry-After',2**attempt))
@@ -69,7 +83,7 @@ class SellerClient:
                     self.sleep(min(30,max(0,delay)));continue
                 raise ApiError('Ozon временно недоступен или ограничил частоту запросов. Повторите обновление позже.')
             if response.status_code!=200:
-                raise ApiError(f'Запрос Ozon не выполнен (HTTP {int(response.status_code)}). Проверьте актуальность метода и права ключа.')
+                raise ApiHttpError(endpoint,response.status_code)
             try:
                 data=response.json(parse_float=Decimal)
             except (ValueError,TypeError):raise ApiError('Ozon вернул ответ неизвестного формата') from None
@@ -77,6 +91,23 @@ class SellerClient:
                 raise ApiError('Изменился формат ответа Ozon. Загрузка остановлена без изменения данных.')
             return data['result']
         raise ApiError('Не удалось выполнить запрос Ozon')
+
+    def diagnose(self,day):
+        first,last,since,to=next(windows(day,day))
+        payloads={
+            'finance':{'filter':{'date':{'from':since,'to':to},'operation_type':[],'posting_number':'','transaction_type':'all'},'page':1,'page_size':1},
+            'fbo':{'dir':'ASC','filter':{'since':since,'to':to,'status':''},'limit':1,'offset':0,'with':{'analytics_data':False,'financial_data':False}},
+            'fbs':{'dir':'ASC','filter':{'since':since,'to':to,'status':''},'limit':1,'offset':0,'with':{'analytics_data':False,'financial_data':False}},
+        }
+        statuses=[]
+        for name,endpoint in ENDPOINTS.items():
+            try:
+                self.post(endpoint,payloads[name])
+                status='HTTP 200: ответ получен (полная структура ещё не проверена)'
+            except ApiError as exc:
+                status=str(exc)
+            statuses.append({'Раздел':name.upper(),'Метод':'POST '+endpoint,'Результат':status})
+        return statuses
 
     def finances(self,since,to):
         result=[];seen=set();expected=None
@@ -193,6 +224,6 @@ def sync(db,client,start,end,schemes=('fbo','fbs')):
         db.executemany('INSERT INTO api_postings VALUES(?,?,?,?) ON CONFLICT(posting_number) DO UPDATE SET schema=excluded.schema,status=excluded.status,payload=excluded.payload',
             [(p['posting_number'],p['schema'],p['status'],json.dumps(p,ensure_ascii=False,default=str)) for p in postings.values()])
         db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[
-            ('api_account',account),('api_last_success',now),('api_start',str(start)),('api_end',str(end)),
+            ('api_account',account),('api_last_success',now),('api_start',str(start)),('api_end',str(end)),('api_components',','.join(['finance']+list(schemes))),
         ])
     return {'finance':len(finances),'postings':len(postings),'last_success':now}
