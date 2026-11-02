@@ -39,8 +39,8 @@ def test_native_import_from_ui(tmp_path,monkeypatch):
         ]),'previous.xlsx'),
     }
     monkeypatch.setattr(st,'file_uploader',lambda *args,**kwargs:files.get(kwargs.get('key')))
-    app=AppTest.from_file('app.py').run()
-    app.sidebar.radio[0].set_value('Импорт отчётов Ozon').run()
+    from ui_harness import technical_app
+    app=technical_app('native').run()
     assert not app.exception
     assert any(m.value=='305.00 ₽' for m in app.metric)
     app.checkbox(key='native_confirm').check()

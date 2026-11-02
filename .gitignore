@@ -12,3 +12,5 @@ dist/
 *.spec
 *.credentials
 .credential-*
+*.enc
+*.remote.json

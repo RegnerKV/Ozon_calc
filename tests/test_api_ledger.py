@@ -230,8 +230,8 @@ def test_promote_through_app_and_show_result(db,tmp_path,monkeypatch):
     copy=sqlite3.connect(tmp_path/'profit.db')
     db.backup(copy);copy.close()
     monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
-    app=AppTest.from_file('app.py').run()
-    app.sidebar.radio[0].set_value('Подключение Ozon').run()
+    from ui_harness import technical_app
+    app=technical_app().run()
     app.date_input(key='api_since').set_value(date.fromisoformat(START))
     app.date_input(key='api_until').set_value(date.fromisoformat(END)).run()
     assert not app.exception
@@ -243,11 +243,9 @@ def test_promote_through_app_and_show_result(db,tmp_path,monkeypatch):
     assert get_setting(saved,'api_profit_enabled')=='1'
     assert calculate(saved,START,END)['profit']==D('214.990')
     saved.close()
-    app.sidebar.radio[0].set_value('Обзор').run()
-    app.sidebar.date_input(key='period_start').set_value(date.fromisoformat(START))
-    app.sidebar.date_input(key='period_end').set_value(date.fromisoformat(END)).run()
+    app=AppTest.from_file('app.py').run()
     assert not app.exception
-    assert any(metric.value=='214.99 ₽' for metric in app.metric)
+    assert any(metric.value=='214,99 ₽' for metric in app.metric)
 
 
 def test_single_cost_file_can_be_imported_for_api_products(db,tmp_path,monkeypatch):
@@ -265,8 +263,8 @@ def test_single_cost_file_can_be_imported_for_api_products(db,tmp_path,monkeypat
         ['Итого',None,None,None,4],['С упаковкой:',None,None,None,80.005]])
     upload=BytesIO(content);upload.name='synthetic-costs.xlsx'
     monkeypatch.setattr(st,'file_uploader',lambda *args,**kwargs:upload if kwargs.get('key')=='api_cost_file' else None)
-    app=AppTest.from_file('app.py').run()
-    app.sidebar.radio[0].set_value('Подключение Ozon').run()
+    from ui_harness import technical_app
+    app=technical_app().run()
     app.date_input(key='api_cost_date').set_value(date.fromisoformat(START))
     app.button(key='api_cost_save').click().run()
     assert not app.exception
@@ -384,8 +382,8 @@ def test_missing_cost_ui_hides_profit_and_blocks_activation(db,tmp_path,monkeypa
     with db:db.execute('DELETE FROM costs')
     copy=sqlite3.connect(tmp_path/'profit.db');db.backup(copy);copy.close()
     monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
-    app=AppTest.from_file('app.py').run()
-    app.sidebar.radio[0].set_value('Подключение Ozon').run()
+    from ui_harness import technical_app
+    app=technical_app().run()
     app.date_input(key='api_since').set_value(date.fromisoformat(START))
     app.date_input(key='api_until').set_value(date.fromisoformat(END)).run()
     assert not app.exception

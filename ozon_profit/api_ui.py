@@ -10,10 +10,19 @@ from .seller_api import SellerClient, ApiError, sync, init_tables
 
 
 def active_credentials():
-    if '_seller_pair' not in st.session_state:
-        try:st.session_state['_seller_pair']=credentials.load() if os.name=='nt' else None
-        except credentials.CredentialError:st.session_state['_seller_pair']=None
-    return st.session_state['_seller_pair']
+    if st.session_state.get('_seller_pair'):return st.session_state['_seller_pair']
+    from .core import connect
+    from .runtime import saved_api_credentials
+    from .secure_store import StorageError
+    db=connect()
+    try:
+        pair=saved_api_credentials(db)
+        st.session_state['_seller_pair']=pair
+        return pair
+    except (credentials.CredentialError,StorageError):
+        st.session_state['_credential_message']='Сохранённый ключ не удалось открыть. Обновите его один раз в настройках.'
+        return None
+    finally:db.close()
 
 
 def run_update(db,start,end,schemes):
@@ -22,6 +31,8 @@ def run_update(db,start,end,schemes):
     client=SellerClient(*pair)
     try:
         result=sync(db,client,start,end,schemes)
+        from .catalog import apply_library
+        apply_library(db)
         if get_setting(db,'api_profit_enabled','0')=='1':
             from .api_ledger import promote
             try:
@@ -43,11 +54,16 @@ def connection_ui(db):
     st.write('В личном кабинете Ozon Seller откройте настройки → раздел API/ключей Seller API. Названия пунктов могут отличаться. Создайте ключ с минимальными правами чтения финансов и отправлений. Client ID и ключ вводятся только здесь, в локальном приложении. Не отправляйте ключ в чат.')
     pair=active_credentials()
     st.caption('Ключ подключён для текущего сеанса.' if pair else 'Ключ пока не подключён.')
-    if os.name!='nt':st.info('В этой системе ключ хранится только в памяти сеанса. Постоянное хранение реализовано через защиту Windows DPAPI и должно быть проверено в Windows-сборке.')
+    if os.name!='nt':st.info('Веб-ключ сохраняется зашифрованно с использованием пароля приложения. Для сохранения после пересоздания сервера подключите Supabase в основных настройках; в Windows используется DPAPI.')
     def remember():
         try:
             values=credentials.validate(st.session_state.get('seller_client_input',''),st.session_state.get('seller_key_input',''))
-            if st.session_state.get('seller_persist',False):credentials.save(*values)
+            from .runtime import secret,save_api_credentials
+            if secret('app_password') or st.session_state.get('seller_persist',False):
+                from .core import connect
+                target=connect()
+                try:save_api_credentials(target,*values)
+                finally:target.close()
             st.session_state['_seller_pair']=values
             st.session_state['_credential_message']='Подключение сохранено. Теперь можно выполнить проверочную загрузку.'
             st.session_state['seller_key_input']=''
@@ -64,6 +80,9 @@ def connection_ui(db):
     if st.session_state.get('_credential_message'):st.info(st.session_state['_credential_message'])
     if st.button('Забыть ключ на этом компьютере'):
         credentials.delete()
+        with db:
+            db.execute('DELETE FROM secure_items WHERE name=?',('seller',))
+            db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',('ignore_config_credentials','1'))
         st.session_state['_seller_pair']=None
         st.session_state.pop('_credential_message',None)
         st.success('Сохранённый ключ удалён. Чтобы отозвать доступ полностью, удалите ключ и в кабинете Ozon.')

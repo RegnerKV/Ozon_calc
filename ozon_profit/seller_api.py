@@ -16,6 +16,7 @@ from .credentials import validate
 
 BASE='https://api-seller.ozon.ru'
 PRODUCT_INFO='/v3/product/info/list'
+PRODUCT_LIST='/v3/product/list'
 ENDPOINTS={'finance':'/v1/finance/accrual/by-day','types':'/v1/finance/accrual/types','fbo':'/v3/posting/fbo/list','fbs':'/v4/posting/fbs/list'}
 
 
@@ -90,7 +91,7 @@ class SellerClient:
         return re.sub(r'\s+',' ',text).strip()[:600]
 
     def post(self,endpoint,payload):
-        if endpoint not in (*ENDPOINTS.values(),PRODUCT_INFO):raise ApiError('Недопустимый метод API')
+        if endpoint not in (*ENDPOINTS.values(),PRODUCT_INFO,PRODUCT_LIST):raise ApiError('Недопустимый метод API')
         for attempt in range(4):
             try:
                 response=self.session.post(BASE+endpoint,json=payload,
@@ -177,6 +178,35 @@ class SellerClient:
                 cursors.add(next_cursor);cursor=next_cursor
             else:raise ApiError('Слишком много страниц начислений за день')
             day+=timedelta(days=1)
+        return result
+
+    def full_catalog(self):
+        cursor='';seen=set();listed=[]
+        for _ in range(10000):
+            response=self.post(PRODUCT_LIST,{'filter':{'visibility':'ALL'},'last_id':cursor,'limit':1000})
+            raw=response.get('result');items=raw.get('items',[]) if isinstance(raw,dict) else None
+            if not isinstance(items,list):raise ApiError('Изменился формат каталога товаров')
+            for item in items:
+                if not isinstance(item,dict) or not item.get('product_id') or not item.get('offer_id'):raise ApiError('Не удалось разобрать товар каталога')
+                identifier=str(item['product_id'])
+                if identifier in seen:raise ApiError('Каталог повторил товар на нескольких страницах')
+                seen.add(identifier);listed.append(item)
+            next_id=raw.get('last_id','')
+            if not items or not next_id:break
+            if next_id==cursor:raise ApiError('Курсор каталога не продвигается')
+            cursor=next_id
+        else:raise ApiError('Слишком много страниц каталога')
+        result=[]
+        for offset in range(0,len(listed),1000):
+            requested={str(p['product_id']) for p in listed[offset:offset+1000]}
+            raw=self.post(PRODUCT_INFO,{'product_id':sorted(requested)})
+            if not isinstance(raw.get('items'),list):raise ApiError('Не получена информация о товарах')
+            for p in raw['items']:
+                if str(p.get('id')) not in requested or not p.get('offer_id'):raise ApiError('Каталог вернул другой идентификатор товара')
+                skus={str(p.get('sku') or '')}
+                skus.update(str(v.get('sku') or '') for v in p.get('sources',[]) if isinstance(v,dict))
+                result.append({'offer_id':str(p['offer_id']),'name':str(p.get('name') or p['offer_id']),
+                    'skus':sorted(s for s in skus if s and s!='0')})
         return result
 
     def products_by_sku(self,skus):

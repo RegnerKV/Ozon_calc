@@ -1,0 +1,288 @@
+"""Owner-facing screens: overview, products, planning and settings."""
+from datetime import date,datetime,timedelta,timezone
+from decimal import Decimal
+import json
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from .core import connect,calculate,money,rub,get_setting,set_setting,save_cost,withdrawal
+from .presentation import cash,details_frame
+from .api_ui import active_credentials,run_update
+from .runtime import secret,save_api_credentials
+from .secure_store import StorageError
+from .seller_api import ApiError,init_tables
+
+MOSCOW=timezone(timedelta(hours=3))
+
+
+def today():return datetime.now(MOSCOW).date()
+
+
+def latest_period(db):
+    last=db.execute('SELECT max(day) FROM operations').fetchone()[0] or get_setting(db,'api_end') or str(today())
+    end=date.fromisoformat(last)
+    return end.replace(day=1),end
+
+
+def ensure_profit(db):
+    if not get_setting(db,'api_last_success'):return
+    a=get_setting(db,'api_start');b=get_setting(db,'api_end')
+    if not a or not b:return
+    if get_setting(db,'api_profit_last_success')==get_setting(db,'api_last_success') and get_setting(db,'api_profit_enabled')=='1' and not calculate(db,a,b)['stale_api']:return
+    from .api_ledger import promote
+    try:promote(db,a,b,tax_base=get_setting(db,'tax_base','sales'),enable=True)
+    except ValueError:
+        message='Есть несопоставленные начисления или товары без себестоимости. Сохранён предыдущий расчёт.'
+        if get_setting(db,'api_profit_error')!=message:set_setting(db,'api_profit_error',message)
+
+
+def refresh(db):
+    schemes=tuple(json.loads(get_setting(db,'api_schemes','["fbo","fbs"]')))
+    first=today()-timedelta(days=89)
+    last_known=get_setting(db,'api_start')
+    # Preserve the initial reconciliation period while first preparing a store.
+    if not get_setting(db,'api_profit_enabled') and last_known:first=min(first,date.fromisoformat(last_known))
+    result=run_update(db,first,today(),schemes)
+    if get_setting(db,'catalog_date')!=str(today()):
+        from .seller_api import SellerClient
+        from .catalog import apply_library
+        pair=active_credentials();client=SellerClient(*pair)
+        try:
+            catalog=client.full_catalog()
+            with db:
+                for p in catalog:
+                    db.execute('INSERT INTO products VALUES(?,?) ON CONFLICT(sku) DO NOTHING',(p['offer_id'],p['name']))
+                    for sku in p['skus']:db.execute('INSERT OR REPLACE INTO product_links VALUES(?,?)',(sku,p['offer_id']))
+                db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',('catalog_date',str(today())))
+            apply_library(db)
+        except ApiError:
+            result['catalog_warning']='Не все товары каталога обновлены; загруженные продажи сохранены.'
+        finally:client.close()
+    ensure_profit(db)
+    return result
+
+
+def _profit(result):
+    if result['stale_api']:return 'Нужен пересчёт'
+    if result['missing'] or result['net_mode']:return 'Нужна себестоимость'
+    if not result['count']:return 'Нет данных'
+    return cash(result['profit'])
+
+
+def overview(db):
+    head,action=st.columns([5,1])
+    with head:
+        st.markdown('## Ваша прибыль — на одном экране')
+        stamp=get_setting(db,'api_profit_last_success') or get_setting(db,'api_last_success')
+        if stamp:
+            try:stamp=datetime.fromisoformat(stamp.replace('Z','+00:00')).astimezone(MOSCOW).strftime('%d.%m.%Y в %H:%M')
+            except ValueError:pass
+        st.caption('Последнее обновление: '+(stamp or 'ещё не было'))
+    with action:
+        if st.button('↻ Обновить',type='primary',width='stretch',key='refresh_main'):
+            if not active_credentials():st.info('Один раз подключите магазин в настройках.')
+            else:
+                try:
+                    with st.spinner('Обновляем данные и прибыль…'):refresh(db)
+                    st.success('Данные обновлены')
+                except ApiError as exc:st.error(str(exc))
+                except Exception:st.error('Обновление не завершено. Предыдущие данные сохранены.')
+    choice=st.selectbox('Период',['Последний месяц с данными','Этот месяц','За 7 дней','Свои даты'],key='overview_period')
+    if choice=='Свои даты':
+        a,b=latest_period(db);c1,c2=st.columns(2)
+        start=c1.date_input('С',a,key='period_start',format='DD.MM.YYYY');end=c2.date_input('По',b,key='period_end',format='DD.MM.YYYY')
+    elif choice=='Этот месяц':start,end=today().replace(day=1),today()
+    elif choice=='За 7 дней':start,end=today()-timedelta(days=6),today()
+    else:start,end=latest_period(db)
+    if end<start:st.error('Проверьте даты');return
+    result=calculate(db,start,end)
+    st.caption(f'{start:%d.%m.%Y} — {end:%d.%m.%Y} · Предварительный расчёт')
+    if not result['count']:
+        st.info('Начните с настроек: подключите Ozon и один раз загрузите себестоимость в разделе «Товары».')
+    if get_setting(db,'api_profit_error'):st.warning('Не всё удалось пересчитать. Подробности — в настройках. Прежние данные сохранены.')
+    if result['missing']:st.warning('У некоторых продаж нет себестоимости. Заполните её в разделе «Товары», чтобы увидеть прибыль.')
+    elif result['estimated']:st.info(f'В расчёте {result["estimated"]} продаж с примерной себестоимостью. Их можно уточнить в товарах.')
+    top=st.columns([2,1,1])
+    top[0].metric('Чистая прибыль · предварительно',_profit(result))
+    top[1].metric('Реализация покупателям',cash(result['revenue']) if not result['stale_api'] else 'Нужен пересчёт')
+    top[2].metric('Начислено Ozon',cash(result['net']))
+    frame=details_frame(result['details'])
+    ads=sum(((-money(r['amount'])) for r in result['details'] if r['kind'] in ('Реклама','Возврат расходов на рекламу')),money(0))
+    row=st.columns(4)
+    row[0].metric('Себестоимость',cash(result['costs']))
+    row[1].metric('Налоговый резерв',cash(result['tax']) if not result['stale_api'] else 'Нужен пересчёт')
+    row[2].metric('Реклама',cash(ads))
+    margin=f'{result["profit"]/result["revenue"]*100:.1f} %'.replace('.',',') if result['revenue']>0 and not result['missing'] and not result['stale_api'] else '—'
+    row[3].metric('Рентабельность',margin)
+    minis=st.columns(3)
+    for col,label,first in zip(minis,['Сегодня','За 7 дней','Этот месяц'],[today(),today()-timedelta(days=6),today().replace(day=1)]):
+        col.caption(label+' · '+_profit(calculate(db,first,today())))
+    if not frame.empty:
+        left,right=st.columns([3,2])
+        with left:
+            st.subheader('Динамика прибыли' if not result['missing'] else 'Динамика начислений')
+            key='profit' if not result['missing'] and not result['stale_api'] else 'amount'
+            daily=frame.groupby('day')[key].sum()
+            fig=go.Figure(go.Scatter(x=daily.index,y=daily.values,mode='lines+markers',fill='tozeroy',
+                line={'color':'#5369d8','width':3},marker={'size':5},fillcolor='rgba(83,105,216,.09)',hovertemplate='%{x}<br>%{y:,.2f} ₽<extra></extra>'))
+            fig.update_layout(height=270,margin=dict(l=0,r=10,t=10,b=0),paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',xaxis_title=None,yaxis_title='₽',showlegend=False)
+            st.plotly_chart(fig,width='stretch')
+        with right:
+            st.subheader('На что уходят деньги')
+            expenses=frame[frame['amount']<0].groupby('kind')['amount'].sum().mul(-1).sort_values(ascending=False)
+            report=pd.DataFrame({'Статья':expenses.index,'Сумма, ₽':expenses.values})
+            if result['costs']>0:report=pd.concat([report,pd.DataFrame([{'Статья':'Себестоимость','Сумма, ₽':float(rub(result['costs']))}])],ignore_index=True)
+            if result['tax']>0:report=pd.concat([report,pd.DataFrame([{'Статья':'Налоговый резерв','Сумма, ₽':float(rub(result['tax']))}])],ignore_index=True)
+            st.dataframe(report,hide_index=True,width='stretch')
+        st.subheader('Результат по товарам')
+        products=frame[frame.sku!=''].groupby('sku').agg(name=('name','first'),amount=('amount','sum'),cost=('cost','sum'),tax=('tax','sum'),profit=('profit','sum')).reset_index()
+        if result['missing'] or result['stale_api']:products['profit']=None
+        st.dataframe(products.rename(columns={'sku':'Артикул','name':'Изделие','amount':'Начисления, ₽','cost':'Себестоимость, ₽','tax':'Налог, ₽','profit':'Результат, ₽'}),hide_index=True,width='stretch')
+        st.caption('Общие расходы магазина не распределяются между товарами и заказами.')
+        with st.expander('Посмотреть заказы и операции'):
+            order=st.text_input('Номер отправления',key='order_filter')
+            selected=frame[frame.order_no==order.strip()] if order.strip() else frame
+            st.dataframe(selected.rename(columns={'day':'Дата','order_no':'Отправление','sku':'Артикул','name':'Изделие','kind':'Тип','amount':'Начисление','cost':'Стоимость','tax':'Налог','profit':'Результат','issue':'Примечание'}),hide_index=True,width='stretch')
+    st.subheader('Личные деньги')
+    actual=get_setting(db,'cash','')
+    reserve=get_setting(db,'tax_reserve',str(result['tax']))
+    available=withdrawal(actual,reserve,get_setting(db,'materials','0'),get_setting(db,'obligations','0'))
+    c1,c2=st.columns(2)
+    c1.metric('Доступно для вывода',cash(available) if actual else 'Укажите остаток')
+    c2.caption('Прибыль и остаток денег отличаются. Здесь учитываются фактически доступные деньги и ваши резервы.')
+    with st.expander('Остаток и резервы'):
+        with st.form('cash'):
+            amount=st.number_input('Доступные деньги, ₽',min_value=0.0,value=float(actual or 0))
+            tax=st.number_input('Резерв на налоги, ₽',min_value=0.0,value=float(reserve))
+            materials=st.number_input('На материалы, ₽',min_value=0.0,value=float(get_setting(db,'materials','0')))
+            obligations=st.number_input('Обязательные платежи, ₽',min_value=0.0,value=float(get_setting(db,'obligations','0')))
+            if st.form_submit_button('Сохранить резервы'):
+                with db:db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[('cash',str(amount)),('tax_reserve',str(tax)),('materials',str(materials)),('obligations',str(obligations))])
+                st.rerun()
+
+
+def products_page(db):
+    from .catalog import import_library
+    st.header('Товары и себестоимость')
+    total=db.execute('SELECT count(DISTINCT sku) FROM costs').fetchone()[0]
+    st.caption(f'Стоимость сохранена для {total} товаров. Загружать файл повторно не нужно.')
+    with st.expander('Загрузить или обновить себестоимость',expanded=total==0):
+        upload=st.file_uploader('Себестоимость.xlsx',type=['xlsx'],key='library_file')
+        first=db.execute('SELECT min(day) FROM operations').fetchone()[0] or get_setting(db,'api_start',str(today().replace(day=1)))
+        effective=st.date_input('Стоимость действует с',date.fromisoformat(first),key='library_since',format='DD.MM.YYYY')
+        if upload and st.button('Сохранить таблицу',key='library_save'):
+            try:
+                count=import_library(db,upload.getvalue(),effective)
+                ensure_profit(db)
+                st.success(f'Сохранено изделий: {count}. Таблица будет использоваться для новых товаров автоматически.')
+            except ValueError as exc:st.error(str(exc))
+    rows=[]
+    for p in db.execute('SELECT * FROM products ORDER BY name'):
+        c=db.execute('SELECT * FROM costs WHERE sku=? AND since<=? ORDER BY since DESC LIMIT 1',(p['sku'],str(today()))).fetchone()
+        rows.append({'sku':p['sku'],'name':p['name'],'amount':c['amount'] if c else '', 'estimated':bool(c['estimated']) if c else True,'note':c['note'] if c else ''})
+    if rows:
+        when=st.date_input('Новые значения действуют с',today(),key='edit_cost_since',format='DD.MM.YYYY')
+        st.caption('Изменение сохраняется с выбранной даты; прежняя стоимость остаётся в истории.')
+        edited=st.data_editor(pd.DataFrame(rows),hide_index=True,width='stretch',disabled=['sku'],key='product_editor',column_config={
+            'sku':st.column_config.TextColumn('Артикул'),'name':st.column_config.TextColumn('Изделие'),
+            'amount':st.column_config.TextColumn('С упаковкой, ₽'),'estimated':st.column_config.CheckboxColumn('Оценка'),
+            'note':st.column_config.TextColumn('Примечание')})
+        if st.button('Сохранить изменения',type='primary'):
+            try:
+                changes=[]
+                for old,new in zip(rows,edited.to_dict('records')):
+                    if old==new:continue
+                    if not new['name'].strip() or new['amount']=='':raise ValueError('Укажите название и стоимость изменённого товара')
+                    value=money(new['amount'])
+                    if value<0:raise ValueError('Стоимость не может быть отрицательной')
+                    changes.append((new,value))
+                with db:
+                    for new,value in changes:
+                        db.execute('UPDATE products SET name=? WHERE sku=?',(new['name'],new['sku']))
+                        db.execute('INSERT OR REPLACE INTO costs VALUES(?,?,?,?,?)',(new['sku'],str(when),str(value),int(new['estimated']),new['note']))
+                ensure_profit(db);st.success('Изменения сохранены')
+            except ValueError as exc:st.error(str(exc))
+    with st.expander('Добавить товар вручную'):
+        with st.form('cost'):
+            sku=st.text_input('Артикул Ozon');name=st.text_input('Название изделия')
+            amount=st.text_input('Стоимость с упаковкой, ₽','0');estimated=st.checkbox('Примерная себестоимость')
+            effective=st.date_input('Действует с',today(),key='manual_cost_since',format='DD.MM.YYYY');note=st.text_input('Примечание')
+            if st.form_submit_button('Сохранить'):
+                try:save_cost(db,sku,name,effective,amount,estimated,note);ensure_profit(db);st.success('Товар сохранён')
+                except ValueError as exc:st.error(str(exc))
+    with st.expander('История изменений стоимости'):
+        st.dataframe(pd.read_sql_query('SELECT p.name AS Изделие,c.sku AS Артикул,c.since AS "С даты",c.amount AS Стоимость,c.estimated AS Оценка FROM costs c JOIN products p USING(sku) ORDER BY c.since DESC',db),hide_index=True,width='stretch')
+
+
+def settings_page(db,manager):
+    st.header('Настройки')
+    pair=active_credentials()
+    st.subheader('Магазин Ozon')
+    st.caption('Подключён · ключ сохранён и подхватывается автоматически' if pair else 'Подключите магазин один раз')
+    with st.expander('Изменить подключение' if pair else 'Подключить магазин',expanded=not bool(pair)):
+        def remember_connection():
+            from .credentials import CredentialError
+            target=connect()
+            try:
+                save_api_credentials(target,st.session_state.get('simple_client',''),st.session_state.get('simple_api_key',''))
+                set_setting(target,'api_schemes',json.dumps(st.session_state.get('simple_schemes') or ['fbo','fbs']))
+                st.session_state['_auto_attempted']=False
+                st.session_state['_simple_connection_status']='Ключ сохранён зашифрованно. Дальше подключение подхватывается автоматически.'
+                st.session_state['simple_client']='';st.session_state['simple_api_key']=''
+            except (ValueError,StorageError,CredentialError) as exc:
+                st.session_state['_simple_connection_status']=str(exc)
+            finally:target.close()
+        with st.form('simple_credentials'):
+            st.text_input('Client ID',key='simple_client')
+            st.text_input('API-ключ',type='password',key='simple_api_key')
+            st.multiselect('Схемы работы',['fbo','fbs'],default=json.loads(get_setting(db,'api_schemes','["fbo","fbs"]')),format_func=str.upper,key='simple_schemes')
+            st.form_submit_button('Сохранить подключение',type='primary',on_click=remember_connection)
+        if st.session_state.get('_simple_connection_status'):st.info(st.session_state['_simple_connection_status'])
+        st.caption('Ключ не хранится в открытом виде и не попадает в журнал. В веб-версии его обработка выполняется на сервере приложения.')
+    st.subheader('Обновления и налоги')
+    with st.form('preferences'):
+        auto=st.checkbox('Обновлять данные при открытии',value=get_setting(db,'api_on_start','1')=='1')
+        every=int(get_setting(db,'api_interval','60'))
+        interval=st.selectbox('Пока приложение открыто',[0,30,60,180],index=[0,30,60,180].index(every),format_func=lambda v:'Обновлять только вручную' if not v else f'Каждые {v} минут')
+        rate=st.number_input('Налоговая ставка, %',0.0,100.0,float(get_setting(db,'tax_rate','4')))
+        bases={'sales':'Реализация покупателям','sales_partner':'Реализация + партнёрские выплаты','sales_points':'Реализация + баллы','sales_points_partner':'Реализация + все возмещения','net':'Начисления после удержаний (свой вариант)'}
+        base=get_setting(db,'tax_base','sales')
+        selected=st.selectbox('Налоговая база',list(bases),index=list(bases).index(base),format_func=bases.get)
+        if st.form_submit_button('Сохранить настройки'):
+            with db:db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[('api_on_start',str(int(auto))),('api_interval',str(interval)),('tax_rate',str(rate)),('tax_base',selected)])
+            st.success('Сохранено')
+    st.subheader('Хранение данных')
+    from .access import local_mode
+    if local_mode():
+        st.success('Данные хранятся на этом компьютере и сохраняются между запусками. Подключать облачное хранилище не нужно.')
+        st.caption('В Windows ключ Ozon защищён DPAPI и доступен только вашей учётной записи.')
+    else:
+        if manager.store:
+            st.success('Постоянное хранилище Supabase подключено' if not manager.last_error else 'Хранилище настроено, но последняя отправка не удалась')
+            if manager.last_error:st.warning(manager.last_error)
+            st.caption('База, история стоимости, план и зашифрованный ключ сохраняются автоматически. В Supabase уходит зашифрованная копия в закрытый bucket.')
+        else:
+            st.warning('Данные и ключ уже сохраняются между открытиями, пока существует диск Streamlit. Чтобы пережить полную пересборку сервера, один раз подключите постоянное хранилище ниже.')
+        with st.expander('Подключить постоянное хранение · один раз',expanded=not bool(manager.store)):
+            st.markdown('''1. Откройте [Supabase](https://supabase.com/dashboard) и войдите через GitHub.
+    2. Нажмите **New project**, задайте имя `Ozon Profit` и пароль базы. Выберите бесплатный тариф и дождитесь создания.
+    3. В настройках проекта найдите **Project URL** и ключ **service_role** (Legacy API Keys). Ключ держите в секрете.
+    4. В Streamlit откройте **Settings → Secrets** и добавьте блок ниже, сохранив существующий `app_password`.
+    5. Сохраните Secrets и откройте приложение. Закрытый bucket создастся автоматически; текущие данные перенесутся без повторного импорта.''')
+            st.code('[storage]\nsupabase_url = "https://ВАШ-ПРОЕКТ.supabase.co"\nsupabase_key = "ВАШ_SERVICE_ROLE_KEY"',language='toml')
+            st.caption('Не присылайте ключи и пароли в чат. Здесь не нужны SQL-команды или создание таблиц. Сервис может приостанавливать бесплатный проект; его потребуется возобновить в Supabase. Проверка реального подключения завершится после ввода ваших реквизитов.')
+    with st.expander('Резервная копия'):
+        from .remote_storage import snapshot
+        st.download_button('Скачать копию данных',snapshot(db),'OzonProfit-backup.db','application/octet-stream')
+        st.caption('Файл содержит финансовые данные, стоимость и план. Сохранённый ключ API из пользовательской копии исключён.')
+    with st.expander('Диагностика и расширенные инструменты'):
+        tool=st.selectbox('Инструмент',['—','Проверить подключение и начисления','Импорт оригинальных Excel','Ручной импорт Excel'],key='advanced_tool')
+        if tool=='Проверить подключение и начисления':
+            from .api_ui import connection_ui
+            connection_ui(db)
+        elif tool=='Импорт оригинальных Excel':
+            from .import_ui import native_import
+            native_import(db)
+        elif tool=='Ручной импорт Excel':
+            from .advanced_ui import manual_import
+            manual_import(db)

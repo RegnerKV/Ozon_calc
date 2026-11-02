@@ -220,7 +220,8 @@ def suggested_costs(products,costs):
     by_name={r['name']:r['amount'] for r in costs}
     result=[]
     for sku,p in products.items():
-        direct=next((name for name in by_name if norm(name).casefold()==norm(p['name']).casefold()),'')
+        def key(value):return re.sub(r'[^a-zа-я0-9]','',norm(value).casefold().replace('ё','е'))
+        direct=next((name for name in by_name if key(name) in (key(p['name']),key(sku))), '')
         target,estimated,note=aliases.get(sku,(direct,not bool(direct),'Сопоставлено по названию' if direct else 'Нужно выбрать себестоимость'))
         result.append(dict(sku=sku,name=p['name'],cost_name=target if target in by_name else '',estimated=estimated,note=note))
     return result

@@ -48,6 +48,9 @@ def connect(path=None):
       sku TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, amount TEXT NOT NULL, qty TEXT NOT NULL,
       source TEXT NOT NULL REFERENCES imports(digest));
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS sales_plans(id INTEGER PRIMARY KEY,payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS secure_items(name TEXT PRIMARY KEY,value BLOB NOT NULL);
+    CREATE TABLE IF NOT EXISTS cost_library(name TEXT NOT NULL,since TEXT NOT NULL,amount TEXT NOT NULL,PRIMARY KEY(name,since));
     CREATE TABLE IF NOT EXISTS product_links(ozon_sku TEXT PRIMARY KEY,sku TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS ledger_backups(id INTEGER PRIMARY KEY,period_start TEXT NOT NULL,period_end TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,operations TEXT NOT NULL);
     ''')

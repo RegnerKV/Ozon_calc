@@ -6,4 +6,13 @@ headless = true
 maxUploadSize = 25
 
 [client]
+toolbarMode = "minimal"
 showErrorDetails = false
+
+[theme]
+base = "light"
+primaryColor = "#5369d8"
+backgroundColor = "#f8f7f4"
+secondaryBackgroundColor = "#f0f0f5"
+textColor = "#182336"
+font = "sans serif"
