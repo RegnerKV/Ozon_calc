@@ -338,3 +338,22 @@ def test_resolve_already_staged_products_without_finance_request():
     assert len(session.calls)==1 and session.calls[0][0].endswith('/v3/product/info/list')
     assert db.execute('SELECT sku FROM product_links WHERE ozon_sku=?',('987',)).fetchone()[0]=='demo'
     db.close()
+
+
+@pytest.mark.parametrize('error,code,retries', [
+    (requests.exceptions.SSLError, 'TLS', 1),
+    (requests.exceptions.ProxyError, 'PROXY', 1),
+    (requests.exceptions.ConnectTimeout, 'CONNECT_TIMEOUT', 4),
+    (requests.exceptions.ReadTimeout, 'READ_TIMEOUT', 4),
+    (requests.exceptions.ConnectionError, 'CONNECTION', 4),
+])
+def test_network_errors_are_actionable_and_never_echo_secrets(error,code,retries):
+    from ozon_profit.seller_api import ApiNetworkError
+    api,session,delays=client([error(TEST_KEY)]*retries)
+    with pytest.raises(ApiNetworkError) as failure:
+        api.post(ENDPOINTS['types'],{})
+    assert failure.value.code==code
+    assert TEST_KEY not in str(failure.value)
+    assert ENDPOINTS['types'] in str(failure.value)
+    assert len(session.calls)==retries
+    assert len(delays)==retries-1

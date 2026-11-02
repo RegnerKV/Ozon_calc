@@ -24,6 +24,26 @@ class ApiError(Exception):
     """Contains only local, non-secret messages. Never include request/response dumps."""
 
 
+class ApiNetworkError(ApiError):
+    def __init__(self,endpoint,error):
+        if isinstance(error,requests.exceptions.SSLError):
+            self.code='TLS'
+            hint='Не удалось проверить сертификат сервера. Проверьте дату и время Windows и обновления доверенных сертификатов.'
+        elif isinstance(error,requests.exceptions.ProxyError):
+            self.code='PROXY'
+            hint='Не удалось подключиться через настроенный прокси. Проверьте настройки прокси Windows или вашей организации.'
+        elif isinstance(error,requests.exceptions.ConnectTimeout):
+            self.code='CONNECT_TIMEOUT'
+            hint='Ozon не ответил при установке соединения. Попробуйте позже или проверьте доступ к api-seller.ozon.ru в вашей сети.'
+        elif isinstance(error,requests.exceptions.ReadTimeout):
+            self.code='READ_TIMEOUT'
+            hint='Соединение установлено, но ответ Ozon не пришёл вовремя. Повторите обновление позже.'
+        else:
+            self.code='CONNECTION'
+            hint='Соединение с Ozon прервано или адрес сервера недоступен. Проверьте интернет и доступ к api-seller.ozon.ru.'
+        super().__init__(f'{hint} Код: {self.code}; метод: {endpoint}. Сохранённые данные не изменены.')
+
+
 class ApiHttpError(ApiError):
     def __init__(self,endpoint,status,provider_detail=''):
         self.endpoint=endpoint
@@ -97,9 +117,11 @@ class SellerClient:
                 response=self.session.post(BASE+endpoint,json=payload,
                     headers={'Client-Id':self.client_id,'Api-Key':self._api_key,'Content-Type':'application/json'},
                     timeout=(10,45),allow_redirects=False)
-            except requests.RequestException:
+            except (requests.exceptions.SSLError,requests.exceptions.ProxyError) as exc:
+                raise ApiNetworkError(endpoint,exc) from None
+            except requests.RequestException as exc:
                 if attempt<3:self.sleep(2**attempt);continue
-                raise ApiError('Нет соединения с Ozon. Проверьте интернет и доступ к api-seller.ozon.ru. Сохранённые данные не изменены.') from None
+                raise ApiNetworkError(endpoint,exc) from None
             if response.status_code in (401,403):
                 raise ApiHttpError(endpoint,response.status_code,self._error_detail(response))
             if response.status_code==429 or 500<=response.status_code<600:

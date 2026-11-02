@@ -42,6 +42,11 @@ def _run():
 
 def main():
     os.environ['OZON_PROFIT_LOCAL']='1'
+    if os.name=='nt':
+        # Verify HTTPS using Windows' native trusted roots, including managed roots.
+        # Configure before importing Requests or Streamlit. TLS verification stays on.
+        import truststore
+        truststore.inject_into_ssl()
     mutex=None;kernel=None
     if os.name=='nt':
         from ctypes import wintypes

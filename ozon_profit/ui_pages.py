@@ -70,6 +70,7 @@ def _profit(result):
 
 
 def overview(db):
+    notice=None
     head,action=st.columns([5,1])
     with head:
         st.markdown('## Ваша прибыль — на одном экране')
@@ -80,13 +81,14 @@ def overview(db):
         st.caption('Последнее обновление: '+(stamp or 'ещё не было'))
     with action:
         if st.button('↻ Обновить',type='primary',width='stretch',key='refresh_main'):
-            if not active_credentials():st.info('Один раз подключите магазин в настройках.')
+            if not active_credentials():notice=('info','Один раз подключите магазин в настройках.')
             else:
                 try:
                     with st.spinner('Обновляем данные и прибыль…'):refresh(db)
-                    st.success('Данные обновлены')
-                except ApiError as exc:st.error(str(exc))
-                except Exception:st.error('Обновление не завершено. Предыдущие данные сохранены.')
+                    notice=('success','Данные обновлены')
+                except ApiError as exc:notice=('error',str(exc))
+                except Exception:notice=('error','Обновление не завершено. Предыдущие данные сохранены.')
+    if notice:getattr(st,notice[0])(notice[1])
     choice=st.selectbox('Период',['Последний месяц с данными','Этот месяц','За 7 дней','Свои даты'],key='overview_period')
     if choice=='Свои даты':
         a,b=latest_period(db);c1,c2=st.columns(2)
@@ -98,7 +100,8 @@ def overview(db):
     result=calculate(db,start,end)
     st.caption(f'{start:%d.%m.%Y} — {end:%d.%m.%Y} · Предварительный расчёт')
     if not result['count']:
-        st.info('Начните с настроек: подключите Ozon и один раз загрузите себестоимость в разделе «Товары».')
+        if active_credentials():st.info('За выбранный период нет рассчитанных данных. Нажмите «Обновить». Если загрузка завершится ошибкой, её причина появится выше. Себестоимость загружается один раз в разделе «Товары».')
+        else:st.info('Начните с настроек: подключите Ozon и один раз загрузите себестоимость в разделе «Товары».')
     if get_setting(db,'api_profit_error'):st.warning('Не всё удалось пересчитать. Подробности — в настройках. Прежние данные сохранены.')
     if result['missing']:st.warning('У некоторых продаж нет себестоимости. Заполните её в разделе «Товары», чтобы увидеть прибыль.')
     elif result['estimated']:st.info(f'В расчёте {result["estimated"]} продаж с примерной себестоимостью. Их можно уточнить в товарах.')
@@ -219,6 +222,14 @@ def settings_page(db,manager):
     pair=active_credentials()
     st.subheader('Магазин Ozon')
     st.caption('Подключён · ключ сохранён и подхватывается автоматически' if pair else 'Подключите магазин один раз')
+    if pair and st.button('Проверить соединение',key='simple_check_connection'):
+        from .seller_api import SellerClient,ENDPOINTS
+        client=SellerClient(*pair)
+        try:
+            with st.spinner('Проверяем доступ к Ozon…'):client.post(ENDPOINTS['types'],{})
+            st.success('Ozon ответил. Вернитесь в «Обзор» и нажмите «Обновить» для загрузки данных.')
+        except ApiError as exc:st.error(str(exc))
+        finally:client.close()
     with st.expander('Изменить подключение' if pair else 'Подключить магазин',expanded=not bool(pair)):
         def remember_connection():
             from .credentials import CredentialError
