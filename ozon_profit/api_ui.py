@@ -20,7 +20,18 @@ def run_update(db,start,end,schemes):
     pair=active_credentials()
     if not pair:raise ApiError('Сначала введите Client ID и ключ в разделе «Подключение Ozon».')
     client=SellerClient(*pair)
-    try:return sync(db,client,start,end,schemes)
+    try:
+        result=sync(db,client,start,end,schemes)
+        if get_setting(db,'api_profit_enabled','0')=='1':
+            from .api_ledger import promote
+            try:
+                promote(db,start,end)
+                result['profit_status']='updated'
+            except ValueError:
+                set_setting(db,'api_profit_error','Новые начисления загружены, но не все удалось сопоставить. Прибыль сохранена по предыдущим данным; проверьте раздел прибыли API.')
+                result['profit_status']='blocked'
+        else:result['profit_status']='disabled'
+        return result
     finally:client.close()
 
 
@@ -28,7 +39,7 @@ def connection_ui(db):
     init_tables(db)
     st.subheader('Подключение Ozon Seller API')
     st.caption('Версия подключения: начисления v1 • FBO v3 • FBS v4')
-    st.warning('Подключение обновлено по опубликованным схемам API за октябрь 2026 года. Проверка реальных ответов вашего магазина ещё не завершена. Доступ без Premium не подтверждён реальным успешным запросом. Загруженные API-данные доступны для проверки; они пока не пересчитывают прибыль из Excel.')
+    st.warning('Подключение обновлено по опубликованным схемам API за октябрь 2026 года. Проверка реальных ответов вашего магазина ещё не завершена. Доступ без Premium не подтверждён реальным успешным запросом. Начисления можно включить в прибыль после проверки сопоставления ниже. Прибыль остаётся предварительной.')
     st.write('В личном кабинете Ozon Seller откройте настройки → раздел API/ключей Seller API. Названия пунктов могут отличаться. Создайте ключ с минимальными правами чтения финансов и отправлений. Client ID и ключ вводятся только здесь, в локальном приложении. Не отправляйте ключ в чат.')
     pair=active_credentials()
     st.caption('Ключ подключён для текущего сеанса.' if pair else 'Ключ пока не подключён.')
@@ -91,12 +102,14 @@ def connection_ui(db):
                     raise ApiError('Выберите FBO/FBS или включите загрузку только финансов.')
                 stats=run_update(db,first,last,() if finance_only else schemes)
             st.success(f'Получено финансовых операций: {stats["finance"]}; отправлений: {stats["postings"]}.')
+            if stats.get('profit_status')=='blocked':st.warning(get_setting(db,'api_profit_error'))
+            elif stats.get('profit_status')=='updated':st.success('Прибыль API пересчитана.')
         except ApiError as exc:st.error(str(exc))
         except Exception:st.error('Обновление не завершено. Проверьте соединение и настройки; ключи и ответы API в журнал не выводятся.')
     st.caption('Последнее успешное обновление выбранных разделов: '+get_setting(db,'api_last_success','ещё не было'))
     st.caption('Загруженные разделы: '+get_setting(db,'api_components','ещё не было'))
     st.subheader('Автоматическая загрузка')
-    st.caption('По умолчанию отключена. Работает, пока открыто приложение и доступен ключ. Последние 90 дней запрашиваются заново, чтобы получить задержанные начисления. Для более старых корректировок выберите период вручную. Это проверочная загрузка, без пересчёта прибыли.')
+    st.caption('По умолчанию отключена. Работает, пока открыто приложение и доступен ключ. Последние 90 дней запрашиваются заново, чтобы получить задержанные начисления. Для более старых корректировок выберите период вручную. После включения прибыли API успешная загрузка также пересчитывает прибыль; при ошибке сопоставления прежний расчёт сохраняется.')
     with st.form('api_auto'):
         enabled=st.checkbox('Обновлять при открытии приложения',value=get_setting(db,'api_on_start','0')=='1')
         minutes=st.selectbox('Повторять загрузку',options=[0,30,60,180],index=[0,30,60,180].index(int(get_setting(db,'api_interval','0'))),format_func=lambda v:'Отключено' if v==0 else f'Каждые {v} минут')
@@ -111,6 +124,8 @@ def connection_ui(db):
         view.append({'ID':r['id'],'Дата':r['day'],'Тип':p.get('operation_type_name') or p.get('operation_type'),'Начисление, ₽':float(money(r['amount'])),'Отправление':p.get('posting',{}).get('posting_number') or ''})
     st.dataframe(pd.DataFrame(view),width='stretch',hide_index=True)
     if rows:st.metric('Итого начислений API за выбранный период',f'{rub(sum((money(r["amount"]) for r in rows),money(0))):,.2f} ₽'.replace(',',' '))
+    cost_upload_ui(db,first)
+    profit_ui(db,first,last)
     st.subheader('Отправления и состав')
     postings=[]
     for r in db.execute('SELECT payload FROM api_postings ORDER BY posting_number'):
@@ -118,5 +133,82 @@ def connection_ui(db):
         for p in posting['products']:
             postings.append({'Отправление':posting['posting_number'],'Схема':posting['schema'].upper(),'Статус':posting['status'],'Артикул':p.get('offer_id'),'SKU':p.get('sku'),'Товар':p.get('name'),'Количество':p.get('quantity')})
     st.dataframe(pd.DataFrame(postings),width='stretch',hide_index=True)
-    st.caption('Список отправлений содержит последние сохранённые статусы по всем загруженным периодам. При загрузке по дате создания старые отправления вне периода не обновляются; расширьте период для их проверки.')
+    st.caption('Список отправлений содержит последние сохранённые статусы по всем загруженным периодам. Для сопоставления дополнительно запрашиваются отправления, созданные за 31 день до начала финансового периода. Более старые отправления могут потребовать расширения периода.')
     st.info('Реклама: суммы, которые вернёт финансовый API, сохраняются в составе операций. Отдельное подключение Performance API, его права, доступность и рекламная статистика пока не реализованы. Не добавляйте рекламные расходы второй раз поверх удержаний.')
+
+
+def profit_ui(db,start,end):
+    from .api_ledger import project,preview,promote,restore_previous
+    st.subheader('Прибыль по данным API')
+    bases={'sales':'Только реализация','sales_partner':'Реализация + программы партнёров',
+           'sales_points':'Реализация + баллы','sales_points_partner':'Реализация + баллы + программы партнёров',
+           'net':'Начисления после удержаний (пользовательский вариант)'}
+    base=get_setting(db,'tax_base','sales')
+    selected=st.selectbox('Налоговая база для прибыли API',list(bases),index=list(bases).index(base),format_func=bases.get,key='api_profit_tax')
+    st.caption('Ставка берётся из настроек. Налоговый резерв предварительный; выбор базы сам по себе не подтверждает правила налогообложения.')
+    projection=project(db,start,end)
+    if projection.issues:
+        st.warning('Прибыль API пока не включена для этого периода: требуется сопоставление.')
+        st.dataframe(pd.DataFrame({'Что проверить':projection.issues}),width='stretch',hide_index=True)
+        st.caption('Если не найдены артикулы или количество: снимите флажок «только финансовые начисления», выберите свои схемы FBO/FBS и загрузите данные ещё раз. Стоимость изделий задаётся отдельно в справочнике или через импорт исходных Excel.')
+    else:
+        result=preview(db,projection,selected)
+        labels=[('Начисления','net'),('Реализация','revenue'),('Себестоимость','costs'),('Налоговый резерв','tax'),('Предварительная прибыль','profit')]
+        for col,(label,key) in zip(st.columns(len(labels)),labels):col.metric(label,f'{rub(result[key]):,.2f} ₽'.replace(',',' '))
+        if result['missing'] or result['estimated']:
+            st.warning(f'Неполный расчёт: {result["missing"]} продаж без стоимости, {result["estimated"]} с примерной себестоимостью. Исправьте справочник; показанная прибыль может быть завышена.')
+        st.caption('Вычисление по API: исходная комиссия и баллы учитываются один раз; итоговая комиссия не прибавляется повторно. Возврат выручки не означает физический возврат товара в запас.')
+        approved=st.checkbox('Использовать API для прибыли: заменить операции Ozon из Excel за выбранный период и пересчитывать обновляемые периоды после следующих загрузок. Предыдущие операции сохранить в резервной копии.',key='api_profit_approve')
+        if st.button('Включить прибыль API',disabled=not approved,key='api_profit_enable'):
+            try:
+                promote(db,start,end,tax_base=selected,enable=True)
+                st.success('Прибыль API включена. Откройте «Обзор» и выберите этот период. Следующие успешные обновления будут пересчитывать прибыль автоматически.')
+            except ValueError as exc:st.error(str(exc))
+    if get_setting(db,'api_profit_error'):st.warning(get_setting(db,'api_profit_error'))
+    if db.execute('SELECT 1 FROM ledger_backups WHERE period_start=? AND period_end=?',(str(start),str(end))).fetchone():
+        if st.button('Вернуть предыдущие операции периода и отключить автопересчёт API',key='api_profit_restore'):
+            try:
+                restore_previous(db,start,end)
+                st.success('Предыдущие операции восстановлены. Автопересчёт API отключён. Настройки налога и история себестоимости сохранены.')
+            except ValueError as exc:st.error(str(exc))
+
+
+def cost_upload_ui(db,since):
+    from .ozon_excel import parse_costs,suggested_costs
+    products={}
+    for row in db.execute('SELECT payload FROM api_postings'):
+        for p in json.loads(row[0]).get('products',[]):
+            if p.get('offer_id'):
+                article=str(p['offer_id'])
+                products[article]={'name':str(p.get('name') or article),'sku':article}
+    if not products:return
+    with st.expander('Загрузить себестоимость для товаров API'):
+        st.caption('Достаточно одного файла «Себестоимость.xlsx». Итоги с упаковкой читаются из листа «Украшения». Уже сохранённая история остаётся; запись на ту же дату заменяется. Оценки «Малин» по «Рыбе» останутся примерными.')
+        uploaded=st.file_uploader('Файл себестоимости',type=['xlsx'],key='api_cost_file')
+        if not uploaded:return
+        try:
+            costs=parse_costs(uploaded.getvalue())
+            values={r['name']:r['amount'] for r in costs}
+            table=st.data_editor(pd.DataFrame(suggested_costs(products,costs)),hide_index=True,width='stretch',
+                disabled=['sku','name'],column_config={
+                    'sku':st.column_config.TextColumn('Артикул'),
+                    'name':st.column_config.TextColumn('Товар'),
+                    'cost_name':st.column_config.SelectboxColumn('Изделие в себестоимости',options=['']+list(values)),
+                    'estimated':st.column_config.CheckboxColumn('Примерная стоимость'),
+                    'note':st.column_config.TextColumn('Примечание'),
+                },key='api_cost_mapping')
+            effective=st.date_input('Эта стоимость действует с',since,key='api_cost_date')
+            if st.button('Сохранить себестоимость товаров API',key='api_cost_save'):
+                selected=[]
+                for row in table.to_dict('records'):
+                    if row['cost_name'] not in values:continue
+                    estimate=bool(row['estimated']) or ('малина' in row['sku'].lower() and row['cost_name']=='Подвеска Рыба')
+                    selected.append((row['sku'],row['name'],values[row['cost_name']],estimate,row['note']))
+                if not selected:raise ValueError('Выберите хотя бы одно изделие для сопоставления')
+                with db:
+                    for sku,name,amount,estimated,note in selected:
+                        db.execute('INSERT INTO products VALUES(?,?) ON CONFLICT(sku) DO UPDATE SET name=excluded.name',(sku,name))
+                        db.execute('INSERT OR REPLACE INTO costs VALUES(?,?,?,?,?)',(sku,str(effective),str(amount),int(estimated),note))
+                st.success(f'Себестоимость сохранена для {len(selected)} товаров. Проверка прибыли ниже пересчитана.')
+        except ValueError as exc:st.error(str(exc))
+        except Exception:st.error('Не удалось прочитать файл себестоимости. Проверьте формат и лист «Украшения».')

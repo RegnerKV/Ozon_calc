@@ -1,0 +1,271 @@
+"""Fictional finances only; no uploaded store data or credentials."""
+from datetime import date
+import json
+from decimal import Decimal as D
+import pytest
+from ozon_profit.core import connect,save_cost,set_setting,calculate,import_operations,get_setting
+from ozon_profit.seller_api import init_tables,clean_finance
+from ozon_profit.api_ledger import project,preview,promote,restore_previous
+
+START=END='2026-08-03'
+
+
+def m(value):return {'amount':str(value),'currency':'RUB'}
+
+
+def posting_accrual(identifier=1,sale=500,bonus=100,partner=5,original=-200,price=250,delivery=-10):
+    return {'accrual_id':identifier,'date':START,'accrued_category':'POSTING','unit_number':'100-200-1',
+        'total_amount':m(sale+bonus+partner+original+delivery),
+        'posting':{'delivery_schema':'FBS','products':[{'sku':987,
+            'commission':{'sale_amount':m(sale),'sale_price':m(price),'bonus':m(bonus),
+                'coinvestment':m(partner),'sale_commission':m(original),'commission':m(original+bonus+partner)},
+            'delivery':{'total_accrued':m(delivery),'services':[{'type_id':8,'accrued':m(delivery)}]}}]}}
+
+
+@pytest.fixture
+def db():
+    db=connect(':memory:');init_tables(db)
+    save_cost(db,'demo','Демо',START,'80.005')
+    with db:
+        db.execute('INSERT INTO product_links VALUES(?,?)',('987','demo'))
+        db.execute('INSERT INTO api_postings VALUES(?,?,?,?)',('100-200-1','fbs','delivered',json.dumps({
+            'posting_number':'100-200-1','schema':'fbs','status':'delivered',
+            'products':[{'sku':987,'offer_id':'demo','name':'Демо','quantity':2}]})))
+    for key,value in [('api_start',START),('api_end',END),('api_last_success','2026-08-04T00:00:00Z'),('tax_base','sales')]:set_setting(db,key,value)
+    yield db
+    db.close()
+
+
+def stage(db,items):
+    with db:
+        db.execute('DELETE FROM api_finance')
+        for item in items:
+            row=clean_finance(item,date.fromisoformat(START),{'8':'Логистика','9':'Продвижение с оплатой за заказ'})
+            db.execute('INSERT INTO api_finance VALUES(?,?,?,?)',(row['id'],row['day'],row['amount'],json.dumps(row['payload'])))
+
+
+def excel(db):
+    import_operations(db,b'fictional-xlsx','demo.xlsx',[
+        dict(id='ozon-xlsx:sale',day=START,kind='sale',amount=500,qty=2,sku='demo',name='Демо',order_no='100-200-1'),
+        dict(id='ozon-xlsx:fee',day=START,kind='service',amount=-105,qty=0,sku='',order_no='')])
+
+
+def test_projection_balances_original_commission_and_discounts(db):
+    stage(db,[posting_accrual()])
+    p=project(db,START,END)
+    assert not p.issues and p.net==395
+    assert sum(D(r['amount']) for r in p.rows)==395
+    amounts={r['kind']:D(r['amount']) for r in p.rows}
+    assert amounts['commission']==-200 and amounts['points']==100 and amounts['partner']==5
+    assert amounts['logistics']==-10
+    r=preview(db,p)
+    assert r['revenue']==500 and r['costs']==D('160.010') and r['tax']==20
+    assert r['profit']==D('214.990')
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0
+
+
+def test_source_switch_replaces_excel_and_has_reversible_backup(db):
+    excel(db);stage(db,[posting_accrual()])
+    before=calculate(db,START,END)
+    p=promote(db,START,END,enable=True)
+    assert calculate(db,START,END)['net']==before['net']==395
+    assert db.execute("SELECT count(*) FROM operations WHERE id LIKE 'ozon-xlsx:%'").fetchone()[0]==0
+    assert db.execute('SELECT count(*) FROM ledger_backups').fetchone()[0]==1
+    assert get_setting(db,'api_profit_enabled')=='1'
+    restore_previous(db,START,END)
+    assert db.execute("SELECT count(*) FROM operations WHERE id LIKE 'ozon-xlsx:%'").fetchone()[0]==2
+    assert calculate(db,START,END)['profit']==before['profit']
+    assert get_setting(db,'api_profit_enabled')=='0'
+
+
+def test_repeat_promotion_is_idempotent_without_extra_backups(db):
+    stage(db,[posting_accrual()])
+    promote(db,START,END);promote(db,START,END)
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==5
+    assert db.execute('SELECT count(*) FROM ledger_backups').fetchone()[0]==0
+
+
+def test_correction_replaces_previous_projection(db):
+    stage(db,[posting_accrual()]);promote(db,START,END)
+    stage(db,[posting_accrual(delivery=-15)]);promote(db,START,END)
+    assert calculate(db,START,END)['net']==390
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==5
+    assert db.execute('SELECT count(*) FROM ledger_backups').fetchone()[0]==1
+
+
+def test_missing_order_uses_exact_unit_price_and_saved_sku_link(db):
+    with db:db.execute('DELETE FROM api_postings')
+    stage(db,[posting_accrual()])
+    p=project(db,START,END)
+    assert not p.issues
+    assert next(r['qty'] for r in p.rows if r['kind']=='sale')=='2'
+
+
+def test_missing_unit_price_can_use_single_sale_order_composition(db):
+    item=posting_accrual();del item['posting']['products'][0]['commission']['sale_price']
+    stage(db,[item]);assert not project(db,START,END).issues
+
+
+def test_missing_quantity_blocks_source_switch_and_preserves_excel(db):
+    excel(db)
+    with db:db.execute('DELETE FROM api_postings')
+    item=posting_accrual();del item['posting']['products'][0]['commission']['sale_price']
+    stage(db,[item]);p=project(db,START,END)
+    assert p.issues
+    with pytest.raises(ValueError):promote(db,START,END,enable=True)
+    assert db.execute("SELECT count(*) FROM operations WHERE id LIKE 'ozon-xlsx:%'").fetchone()[0]==2
+    assert get_setting(db,'api_profit_enabled')!='1'
+
+
+def test_unexplained_total_blocks_projection_without_adjustment_plug(db):
+    item=posting_accrual();item['total_amount']=m(999)
+    stage(db,[item]);p=project(db,START,END)
+    assert p.issues
+    with pytest.raises(ValueError):preview(db,p)
+
+
+def test_missing_original_commission_does_not_guess_from_final(db):
+    item=posting_accrual();del item['posting']['products'][0]['commission']['sale_commission']
+    stage(db,[item]);assert project(db,START,END).issues
+
+
+def test_repeated_sale_quantities_cannot_exceed_order(db):
+    stage(db,[posting_accrual(1),posting_accrual(2)])
+    assert project(db,START,END).issues
+
+
+def test_returns_do_not_restore_inventory_or_estimate_partial_quantity(db):
+    item=posting_accrual(sale=-250,bonus=-50,partner=0,original=100,price=-250,delivery=-5)
+    stage(db,[item]);p=project(db,START,END)
+    assert not p.issues
+    r=preview(db,p)
+    assert r['costs']==0 and r['revenue']==-250 and r['tax']==0
+    del item['posting']['products'][0]['commission']['sale_price']
+    stage(db,[item]);assert project(db,START,END).issues
+
+
+def test_unknown_cost_is_visible_and_not_fabricated(db):
+    with db:db.execute('DELETE FROM costs')
+    stage(db,[posting_accrual()]);r=preview(db,project(db,START,END))
+    assert r['missing']==1 and r['incomplete'] and r['costs']==0
+
+
+def test_estimated_cost_and_tax_choice_preserved(db):
+    save_cost(db,'demo','Демо',START,'80.005',True)
+    stage(db,[posting_accrual()]);p=project(db,START,END)
+    assert preview(db,p,'sales_partner')['tax']==D('20.20')
+    assert preview(db,p)['estimated']==1
+    promote(db,START,END,tax_base='sales_partner')
+    assert calculate(db,START,END)['tax']==D('20.20')
+
+
+def test_manual_finance_cannot_be_silently_replaced(db):
+    import_operations(db,b'manual','manual',[dict(id='manual',day=START,kind='service',amount=-5,qty=0)])
+    stage(db,[posting_accrual()])
+    assert project(db,START,END).issues
+    with pytest.raises(ValueError):promote(db,START,END)
+
+
+def test_unloaded_period_cannot_erase_excel(db):
+    excel(db);stage(db,[])
+    assert project(db,'2026-08-01',END).issues
+    with pytest.raises(ValueError):promote(db,'2026-08-01',END)
+    assert calculate(db,START,END)['net']==395
+
+
+def test_fully_downloaded_empty_period_removes_prior_owned_operations(db):
+    excel(db);stage(db,[]);promote(db,START,END)
+    assert calculate(db,START,END)['count']==0
+    assert db.execute('SELECT count(*) FROM ledger_backups').fetchone()[0]==1
+
+
+def test_advertising_already_in_total_is_not_deducted_twice(db):
+    ad=dict(accrual_id=2,date=START,accrued_category='NON_ITEM',total_amount=m(-25),non_item_fee={'type_id':9,'accrued':m(-25)})
+    stage(db,[posting_accrual(),ad]);p=project(db,START,END)
+    assert not p.issues
+    r=preview(db,p)
+    assert r['net']==370 and r['profit']==D('189.990')
+    assert sum(D(r['amount']) for r in p.rows if r['kind']=='advertising')==-25
+
+
+def test_automatic_update_recomputes_profit_after_activation(db,monkeypatch):
+    from ozon_profit import api_ui
+    stage(db,[posting_accrual()]);promote(db,START,END,enable=True)
+    monkeypatch.setattr(api_ui,'active_credentials',lambda:('123','synthetic-key'))
+    def download(*args):
+        stage(db,[posting_accrual(delivery=-15)])
+        set_setting(db,'api_last_success','2026-08-05T00:00:00Z')
+        return {'finance':1,'postings':1}
+    monkeypatch.setattr(api_ui,'sync',download)
+    result=api_ui.run_update(db,date.fromisoformat(START),date.fromisoformat(END),('fbs',))
+    assert result['profit_status']=='updated'
+    assert calculate(db,START,END)['profit']==D('209.990')
+    assert get_setting(db,'api_profit_last_success')=='2026-08-05T00:00:00Z'
+
+
+def test_automatic_update_keeps_old_profit_when_new_composition_is_unknown(db,monkeypatch):
+    from ozon_profit import api_ui
+    stage(db,[posting_accrual()]);promote(db,START,END,enable=True)
+    monkeypatch.setattr(api_ui,'active_credentials',lambda:('123','synthetic-key'))
+    def download(*args):
+        item=posting_accrual();item['total_amount']=m(999)
+        stage(db,[item]);set_setting(db,'api_last_success','2026-08-05T00:00:00Z')
+        return {'finance':1,'postings':1}
+    monkeypatch.setattr(api_ui,'sync',download)
+    result=api_ui.run_update(db,date.fromisoformat(START),date.fromisoformat(END),('fbs',))
+    assert result['profit_status']=='blocked' and get_setting(db,'api_profit_error')
+    assert calculate(db,START,END)['profit']==D('214.990')
+    assert get_setting(db,'api_profit_last_success')=='2026-08-04T00:00:00Z'
+
+
+def test_promote_through_app_and_show_result(db,tmp_path,monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    import sqlite3
+    stage(db,[posting_accrual()])
+    copy=sqlite3.connect(tmp_path/'profit.db')
+    db.backup(copy);copy.close()
+    monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
+    app=AppTest.from_file('app.py').run()
+    app.sidebar.radio[0].set_value('Подключение Ozon').run()
+    app.date_input(key='api_since').set_value(date.fromisoformat(START))
+    app.date_input(key='api_until').set_value(date.fromisoformat(END)).run()
+    assert not app.exception
+    assert any(metric.value=='214.99 ₽' for metric in app.metric)
+    app.checkbox(key='api_profit_approve').check()
+    app.button(key='api_profit_enable').click().run()
+    assert not app.exception
+    saved=connect(tmp_path/'profit.db')
+    assert get_setting(saved,'api_profit_enabled')=='1'
+    assert calculate(saved,START,END)['profit']==D('214.990')
+    saved.close()
+    app.sidebar.radio[0].set_value('Обзор').run()
+    app.sidebar.date_input(key='period_start').set_value(date.fromisoformat(START))
+    app.sidebar.date_input(key='period_end').set_value(date.fromisoformat(END)).run()
+    assert not app.exception
+    assert any(metric.value=='214.99 ₽' for metric in app.metric)
+
+
+def test_single_cost_file_can_be_imported_for_api_products(db,tmp_path,monkeypatch):
+    import sqlite3
+    from io import BytesIO
+    import streamlit as st
+    from streamlit.testing.v1 import AppTest
+    from test_ozon_excel import xlsx
+    stage(db,[posting_accrual()])
+    with db:db.execute('DELETE FROM costs')
+    copy=sqlite3.connect(tmp_path/'profit.db');db.backup(copy);copy.close()
+    monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
+    content=xlsx('Украшения',[
+        ['Название','Материалы','Количество','Цена','Итого'],['Демо','Материал',1,4,4],
+        ['Итого',None,None,None,4],['С упаковкой:',None,None,None,80.005]])
+    upload=BytesIO(content);upload.name='synthetic-costs.xlsx'
+    monkeypatch.setattr(st,'file_uploader',lambda *args,**kwargs:upload if kwargs.get('key')=='api_cost_file' else None)
+    app=AppTest.from_file('app.py').run()
+    app.sidebar.radio[0].set_value('Подключение Ozon').run()
+    app.date_input(key='api_cost_date').set_value(date.fromisoformat(START))
+    app.button(key='api_cost_save').click().run()
+    assert not app.exception
+    saved=connect(tmp_path/'profit.db')
+    cost=saved.execute('SELECT amount FROM costs WHERE sku=?',('demo',)).fetchone()
+    assert cost[0]=='80.005'
+    saved.close()

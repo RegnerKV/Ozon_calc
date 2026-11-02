@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from decimal import Decimal
 import pandas as pd
 import streamlit as st
@@ -33,7 +33,7 @@ def readable(details):
 
 
 page = st.sidebar.radio('Раздел', ['Обзор', 'Импорт отчётов Ozon', 'Подключение Ozon', 'Загрузка Excel', 'Себестоимость', 'Заказы и операции', 'Настройки', 'Как пользоваться'])
-today = date.today()
+today = datetime.now(timezone(timedelta(hours=3))).date()
 start = st.sidebar.date_input('С даты', date.fromisoformat(get_setting(db,'report_start',str(today.replace(day=1)))),key='period_start')
 end = st.sidebar.date_input('По дату', date.fromisoformat(get_setting(db,'report_end',str(today))),key='period_end')
 if end < start:
@@ -46,8 +46,9 @@ if st.sidebar.button('↻ Обновить', width='stretch'):
     if active_credentials():
         try:
             with st.spinner('Проверочная загрузка Ozon…'):
-                run_update(db,today-timedelta(days=89),today,('fbo','fbs'))
-            st.sidebar.success('API-данные обновлены для сверки. Прибыль пока рассчитывается по Excel.')
+                stats=run_update(db,today-timedelta(days=89),today,('fbo','fbs'))
+            if stats.get('profit_status')=='blocked':st.sidebar.warning(get_setting(db,'api_profit_error'))
+            else:st.sidebar.success('Данные Ozon обновлены.'+(' Прибыль пересчитана.' if stats.get('profit_status')=='updated' else ' Включить прибыль API можно в разделе подключения.'))
         except Exception as exc:
             from ozon_profit.seller_api import ApiError
             st.sidebar.error(str(exc) if isinstance(exc,ApiError) else 'Загрузка Ozon не завершена. Локальные данные сохранены.')
@@ -57,6 +58,9 @@ result = calculate(db, start, end)
 
 if page == 'Обзор':
     st.subheader('Прибыль магазина')
+    if get_setting(db,'api_profit_enabled','0')=='1':
+        st.caption('Автопересчёт API включён. Последний успешный пересчёт: '+get_setting(db,'api_profit_last_success','ещё не было'))
+    if get_setting(db,'api_profit_error'):st.error(get_setting(db,'api_profit_error'))
     st.warning('Предварительный расчёт. Полнота отчётов Ozon и закрытие периода ещё не подтверждены. Импорт файла сам по себе не подтверждает прибыль.')
     cols = st.columns(3)
     for col, label, a, b in zip(cols, ['Сегодня', 'За 7 дней', 'С начала месяца'], [today, today-timedelta(days=6), today.replace(day=1)], [today]*3):
@@ -241,7 +245,7 @@ elif page == 'Настройки':
         if st.form_submit_button('Сохранить настройки'):
             set_setting(db,'tax_rate',rate); set_setting(db,'tax_base',base); st.success('Сохранено. Периоды будут пересчитаны.')
     st.subheader('Подключение Ozon')
-    st.info('Раздел «Подключение Ozon» содержит экспериментальный клиент API для проверочной загрузки. Актуальные методы и доступ без Premium пока не проверены на реальном соединении. API-данные пока не участвуют в расчёте прибыли. Не присылайте ключ в переписку.')
+    st.info('Раздел «Подключение Ozon» содержит экспериментальный клиент API для проверочной загрузки. Пользователь подтвердил загрузку финансов и совпадение с отчётом; состав продаж и прибыль требуют сопоставления. Прибыль API включается после проверки сопоставления в разделе подключения; затем успешные загрузки пересчитывают её автоматически. Не присылайте ключ в переписку.')
     st.subheader('Резервная копия')
     st.caption('Копия содержит финансовые данные и историю стоимости. Храните её у себя; не загружайте на GitHub. API-ключи в копию не включаются.')
     if st.button('Подготовить резервную копию базы'):
@@ -273,7 +277,7 @@ else:
 Подтверждённая прибыль пока не рассчитывается: для неё нужна проверка полноты отчётов, закрытия начислений и сопоставления заказов. При неизвестной себестоимости показанный результат неполный. Прибыль по заказу без общих расходов не равна доле чистой прибыли магазина.
 
 ### Ограничения первой версии
-В разделе «Импорт отчётов Ozon» распознаются оригинальные отчёты и итоги «С упаковкой» листа «Украшения». Для других форматов доступен ручной импорт. Экспериментальная загрузка API находится в разделе «Подключение Ozon»; её данные пока не участвуют в прибыли. Нет сверки банковских выплат и готовой проверенной Windows-сборки. Файлы исходных отчётов в базу не копируются; сохраняются выбранные операции и история себестоимости.
+В разделе «Импорт отчётов Ozon» распознаются оригинальные отчёты и итоги «С упаковкой» листа «Украшения». Для других форматов доступен ручной импорт. Экспериментальная загрузка API находится в разделе «Подключение Ozon»; расчёт по API включается после проверки сопоставления. Нет сверки банковских выплат и готовой проверенной Windows-сборки. Файлы исходных отчётов в базу не копируются; сохраняются выбранные операции и история себестоимости.
 ''')
 db.close()
 
@@ -296,8 +300,9 @@ def scheduled_download():
             st.session_state['_api_last_attempt']=time.monotonic()
             now=datetime.now(timezone(timedelta(hours=3))).date()
             try:
-                run_update(timer_db,now-timedelta(days=89),now,('fbo','fbs'))
-                st.caption('Проверочные API-данные обновлены автоматически. Прибыль из Excel не изменена.')
+                stats=run_update(timer_db,now-timedelta(days=89),now,('fbo','fbs'))
+                if stats.get('profit_status')=='blocked':st.warning(get_setting(timer_db,'api_profit_error'))
+                else:st.caption('Данные Ozon обновлены автоматически.'+(' Прибыль пересчитана.' if stats.get('profit_status')=='updated' else ''))
             except ApiError as exc:
                 st.caption('Автообновление: '+str(exc))
             except Exception:

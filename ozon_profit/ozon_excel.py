@@ -255,6 +255,9 @@ def apply_report(db,content,filename,report,cost_records,since,tax_base):
         db.execute('INSERT INTO imports(digest,name) VALUES(?,?)',(digest,filename))
         db.execute('DELETE FROM operations WHERE day BETWEEN ? AND ? AND id LIKE ?',(str(report.start),str(report.end),PREFIX+'%'))
         db.executemany('INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?)',records)
+        for article,product in report.products.items():
+            if product.get('ozon_sku'):
+                db.execute('INSERT OR REPLACE INTO product_links VALUES(?,?)',(product['ozon_sku'],article))
         for sku,name,amount,estimated,note in checked:
             db.execute('INSERT INTO products VALUES(?,?) ON CONFLICT(sku) DO UPDATE SET name=excluded.name',(sku,name))
             db.execute('INSERT OR REPLACE INTO costs VALUES(?,?,?,?,?)',(sku,str(since),amount,estimated,note))

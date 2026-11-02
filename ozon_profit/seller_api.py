@@ -2,7 +2,7 @@
 
 Migrated using October 2026 published OpenAPI mirrors (see API_MIGRATION.md).
 Live account verification is still required.
-No API response changes the validated accounting ledger in this version.
+Transport stages data; api_ledger projects it only after explicit activation.
 """
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -207,9 +207,9 @@ def _rub_money(value):
     return {'amount':str(money(value['amount'])),'currency':'RUB'}
 
 
-def _fee(value):
+def _fee(value,types=None):
     if not isinstance(value,dict):raise ValueError('Некорректная услуга')
-    return {'type_id':value.get('type_id'),'accrued':_rub_money(value.get('accrued'))}
+    return {'type_id':value.get('type_id'),'type_name':(types or {}).get(str(value.get('type_id')),''),'accrued':_rub_money(value.get('accrued'))}
 
 
 def clean_finance(item,expected_day,types):
@@ -237,18 +237,18 @@ def clean_finance(item,expected_day,types):
                         ('bonus','coinvestment','commission','sale_amount','sale_commission','sale_price','seller_price') if commission.get(k) is not None}
                 delivery=product.get('delivery')
                 if delivery:
-                    clean['delivery']={'services':[_fee(f) for f in delivery.get('services',[])]}
+                    clean['delivery']={'services':[_fee(f,types) for f in delivery.get('services',[])]}
                     if delivery.get('total_accrued') is not None:clean['delivery']['total_accrued']=_rub_money(delivery['total_accrued'])
                 payload['items'].append(clean)
         elif category=='NON_ITEM':
-            fee=_fee(item.get('non_item_fee'));payload['non_item_fee']=fee
+            fee=_fee(item.get('non_item_fee'),types);payload['non_item_fee']=fee
             payload['operation_type_name']=types.get(str(fee['type_id']),labels[category])
         elif category=='ITEM':
             source=item.get('item_fees') or {}
-            for p in source.get('fees',[]):payload['items'].append({'sku':p.get('sku'),'fees':[_fee(f) for f in p.get('fees',[])]})
+            for p in source.get('fees',[]):payload['items'].append({'sku':p.get('sku'),'fees':[_fee(f,types) for f in p.get('fees',[])]})
         elif category=='CONTAINER_FEES':
             source=item.get('container_fees') or {}
-            payload['container_fees']=[_fee(f) for f in source.get('fees',[])]
+            payload['container_fees']=[_fee(f,types) for f in source.get('fees',[])]
         return {'id':'accrual:'+identifier,'day':str(day),'amount':total['amount'],'payload':payload}
     except (KeyError,TypeError,ValueError,AttributeError):
         raise ApiError('Не удалось разобрать начисление: проверьте новый формат, дату и валюту RUB. Данные не сохранены.') from None
@@ -291,7 +291,9 @@ def sync(db,client,start,end,schemes=('fbo','fbs')):
             if not start.isoformat()<=item['day']<=end.isoformat():raise ApiError('Ozon вернул финансовую операцию вне выбранного периода')
             finances[item['id']]=item
         for scheme in schemes:
-            for posting in client.postings(scheme,since,to):
+            # Include recent orders created before the financial period.
+            posting_since=iso(datetime.combine(first-timedelta(days=31),time.min,timezone(timedelta(hours=3)))) if first==start else since
+            for posting in client.postings(scheme,posting_since,to):
                 key=posting['posting_number']
                 if key in postings and postings[key]!=posting:raise ApiError('Статус отправления изменился во время загрузки. Повторите обновление.')
                 postings[key]=posting
@@ -306,6 +308,10 @@ def sync(db,client,start,end,schemes=('fbo','fbs')):
             [(i['id'],i['day'],i['amount'],json.dumps(i['payload'],ensure_ascii=False,default=str)) for i in finances.values()])
         db.executemany('INSERT INTO api_postings VALUES(?,?,?,?) ON CONFLICT(posting_number) DO UPDATE SET schema=excluded.schema,status=excluded.status,payload=excluded.payload',
             [(p['posting_number'],p['schema'],p['status'],json.dumps(p,ensure_ascii=False,default=str)) for p in postings.values()])
+        for posting in postings.values():
+            for product in posting['products']:
+                if product.get('sku') is not None and product.get('offer_id'):
+                    db.execute('INSERT OR REPLACE INTO product_links VALUES(?,?)',(str(product['sku']),str(product['offer_id'])))
         db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[
             ('api_account',account),('api_last_success',now),('api_start',str(start)),('api_end',str(end)),('api_components',','.join(['finance']+list(schemes))),
         ])
