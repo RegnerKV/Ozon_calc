@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import traceback
 import time
 import urllib.request
 
@@ -45,7 +46,10 @@ def launch(exe,env):
 
 
 def stop(process):
-    process.terminate()
+    if process.poll() is not None:return
+    if os.name=='nt':
+        subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
+    else:process.terminate()
     try:process.wait(timeout=15)
     except subprocess.TimeoutExpired:process.kill();process.wait()
 
@@ -83,6 +87,7 @@ def main():
             expect(page.get_by_text('Прогноз чистой прибыли',exact=True)).to_be_visible()
             page.get_by_label('Увеличить долю рекламы на, п. п.',exact=True).fill('5')
             page.get_by_label('Увеличить долю рекламы на, п. п.',exact=True).press('Enter')
+            expect(page.get_by_text('17 882,75 ₽',exact=True)).to_be_visible()
             expect(page.get_by_text('Дополнительный рекламный бюджет',exact=True)).to_be_visible()
             sidebar.get_by_text('Настройки',exact=True).click()
             expect(page.get_by_text('Подключён · ключ сохранён и подхватывается автоматически',exact=True)).to_be_visible()
@@ -102,10 +107,18 @@ def main():
             expect(page.get_by_role('heading',name='Ваша прибыль — на одном экране')).to_be_visible(timeout=90000)
             page.get_by_test_id('stSidebar').get_by_text('План продаж',exact=True).click()
             expect(page.get_by_text('Прогноз чистой прибыли',exact=True)).to_be_visible()
-            expect(page.get_by_label('Увеличить долю рекламы на, п. п.',exact=True)).to_have_value('5')
+            expect(page.get_by_label('Увеличить долю рекламы на, п. п.',exact=True)).to_have_value(re.compile(r'^5(?:\.0+)?$'))
             assert page.get_by_test_id('stException').count()==0
             browser.close()
     finally:stop(process)
     print('Bundled app: all four screens, DPAPI credential reload, single instance and plan persistence verified.')
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    try:
+        main()
+        summary=os.environ.get('GITHUB_STEP_SUMMARY')
+        if summary:Path(summary).write_text('## Windows packaged app verified\n\nAll four screens, DPAPI reload, single instance, and persisted sales plan passed. Synthetic data only.\n',encoding='utf-8')
+    except Exception:
+        summary=os.environ.get('GITHUB_STEP_SUMMARY')
+        if summary:Path(summary).write_text('## Windows packaged app failed\n\n```text\n'+traceback.format_exc()+'\n```\n',encoding='utf-8')
+        raise
