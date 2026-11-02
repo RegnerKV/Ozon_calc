@@ -15,6 +15,7 @@ from .core import money
 from .credentials import validate
 
 BASE='https://api-seller.ozon.ru'
+PRODUCT_INFO='/v3/product/info/list'
 ENDPOINTS={'finance':'/v1/finance/accrual/by-day','types':'/v1/finance/accrual/types','fbo':'/v3/posting/fbo/list','fbs':'/v4/posting/fbs/list'}
 
 
@@ -89,7 +90,7 @@ class SellerClient:
         return re.sub(r'\s+',' ',text).strip()[:600]
 
     def post(self,endpoint,payload):
-        if endpoint not in ENDPOINTS.values():raise ApiError('Недопустимый метод API')
+        if endpoint not in (*ENDPOINTS.values(),PRODUCT_INFO):raise ApiError('Недопустимый метод API')
         for attempt in range(4):
             try:
                 response=self.session.post(BASE+endpoint,json=payload,
@@ -177,6 +178,28 @@ class SellerClient:
             else:raise ApiError('Слишком много страниц начислений за день')
             day+=timedelta(days=1)
         return result
+
+    def products_by_sku(self,skus):
+        requested=sorted(set(str(s) for s in skus if s))
+        products={}
+        for offset in range(0,len(requested),1000):
+            chunk=set(requested[offset:offset+1000])
+            raw=self.post(PRODUCT_INFO,{'sku':sorted(chunk)})
+            items=raw.get('items')
+            if not isinstance(items,list):raise ApiError('Изменился формат справочника товаров')
+            for item in items:
+                if not isinstance(item,dict) or not item.get('offer_id'):
+                    raise ApiError('В справочнике товара не найден артикул')
+                ids={str(item.get('sku') or '')}
+                sources=item.get('sources') or []
+                if not isinstance(sources,list):raise ApiError('Изменился формат источников SKU')
+                ids.update(str(source.get('sku') or '') for source in sources if isinstance(source,dict))
+                for sku in ids & chunk:
+                    record={'sku':sku,'offer_id':str(item['offer_id']),'name':str(item.get('name') or item['offer_id'])}
+                    if sku in products and products[sku]['offer_id']!=record['offer_id']:
+                        raise ApiError('Один SKU сопоставлен разным артикулам')
+                    products[sku]=record
+        return list(products.values())
 
     def postings(self,kind,since,to):
         if kind not in ('fbo','fbs'):raise ApiError('Неизвестная схема работы')
@@ -297,6 +320,11 @@ def sync(db,client,start,end,schemes=('fbo','fbs')):
                 key=posting['posting_number']
                 if key in postings and postings[key]!=posting:raise ApiError('Статус отправления изменился во время загрузки. Повторите обновление.')
                 postings[key]=posting
+    known={r[0] for r in db.execute('SELECT ozon_sku FROM product_links')}
+    for posting in postings.values():
+        known.update(str(p['sku']) for p in posting['products'] if p.get('sku') is not None and p.get('offer_id'))
+    needed={str(p['sku']) for f in finances.values() for p in f['payload'].get('items',[]) if p.get('sku') is not None}-known
+    catalog=client.products_by_sku(needed) if needed else []
     now=datetime.now(timezone.utc).isoformat(timespec='seconds')
     with db:
         db.execute('BEGIN IMMEDIATE')
@@ -312,7 +340,30 @@ def sync(db,client,start,end,schemes=('fbo','fbs')):
             for product in posting['products']:
                 if product.get('sku') is not None and product.get('offer_id'):
                     db.execute('INSERT OR REPLACE INTO product_links VALUES(?,?)',(str(product['sku']),str(product['offer_id'])))
+        for product in catalog:
+            db.execute('INSERT OR REPLACE INTO product_links VALUES(?,?)',(product['sku'],product['offer_id']))
+            db.execute('INSERT INTO products VALUES(?,?) ON CONFLICT(sku) DO NOTHING',(product['offer_id'],product['name']))
         db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[
             ('api_account',account),('api_last_success',now),('api_start',str(start)),('api_end',str(end)),('api_components',','.join(['finance']+list(schemes))),
         ])
     return {'finance':len(finances),'postings':len(postings),'last_success':now}
+
+
+def resolve_product_links(db,client,start,end):
+    """Resolve already-staged finance SKUs without redownloading the period."""
+    account=hashlib.sha256(client.client_id.encode()).hexdigest()
+    bound=db.execute("SELECT value FROM settings WHERE key='api_account'").fetchone()
+    if bound and bound[0]!=account:raise ApiError('Ключ относится к другому Client ID, чем загруженные данные.')
+    known={r[0] for r in db.execute('SELECT ozon_sku FROM product_links')}
+    needed=set()
+    for row in db.execute('SELECT payload FROM api_finance WHERE day BETWEEN ? AND ?',(str(start),str(end))):
+        needed.update(str(p['sku']) for p in json.loads(row[0]).get('items',[]) if p.get('sku') is not None)
+    products=client.products_by_sku(needed-known)
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        current=db.execute("SELECT value FROM settings WHERE key='api_account'").fetchone()
+        if current and current[0]!=account:raise ApiError('Магазин изменился во время сопоставления.')
+        for product in products:
+            db.execute('INSERT OR REPLACE INTO product_links VALUES(?,?)',(product['sku'],product['offer_id']))
+            db.execute('INSERT INTO products VALUES(?,?) ON CONFLICT(sku) DO NOTHING',(product['offer_id'],product['name']))
+    return len(products)

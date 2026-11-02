@@ -63,7 +63,7 @@ def project(db,start,end):
     for raw in records:
         payload=json.loads(raw['payload']);order=payload.get('posting',{}).get('posting_number','')
         category=payload.get('operation_type');actual=money(raw['amount']);net+=actual
-        parts=[]
+        parts=[];final_commissions={};final_deliveries={}
         def emit(suffix,kind,amount,article='',name='',qty=ZERO):
             if amount==0:return
             parts.append(dict(id=PREFIX+raw['id']+':'+suffix,day=raw['day'],order_no=order,
@@ -98,14 +98,20 @@ def project(db,start,end):
                     bonus=_value(commission,'bonus');partner=_value(commission,'coinvestment')
                     emit(f'{index}:points','points' if bonus>=0 else 'points_reversal',bonus,article,name)
                     emit(f'{index}:partner','partner',partner,article,name)
-                    # Use the original commission and explicit reimbursements only.
-                    # A final discounted commission is not counted as another fee.
+                    # Both original and final commission are reported by Ozon.
+                    # A final-based candidate retains points/partner tax categories
+                    # by splitting them out of that reported final amount.
                     if commission:
-                        if commission.get('sale_commission') is None:
-                            raise ValueError('В начислении отсутствует исходная комиссия; нужна проверка состава')
-                        original=_value(commission,'sale_commission')
+                        has_original=commission.get('sale_commission') is not None
+                        has_final=commission.get('commission') is not None
+                        if not has_original and not has_final:
+                            raise ValueError('В начислении отсутствуют исходная и итоговая комиссии')
+                        original=_value(commission,'sale_commission') if has_original else _value(commission,'commission')-bonus-partner
                         emit(f'{index}:commission','commission' if original<=0 else 'service_refund',original,article,name)
+                        if has_final:final_commissions[f'{index}:commission']=(_value(commission,'commission')-bonus-partner,article,name)
                     delivery=item.get('delivery') or {}
+                    if delivery.get('total_accrued') is not None:
+                        final_deliveries[str(index)]=(_value(delivery,'total_accrued'),article,name)
                     services=delivery.get('services',[])
                     if services:
                         for j,value in enumerate(services):fee(f'{index}:delivery:{j}',value,article,name)
@@ -120,8 +126,24 @@ def project(db,start,end):
             elif category=='CONTAINER_FEES':
                 for i,value in enumerate(payload.get('container_fees',[])):fee(f'container:{i}',value)
             elif actual!=0:raise ValueError('Неизвестная категория начисления')
-            explained=sum((money(r['amount']) for r in parts),ZERO)
-            if explained!=actual:raise ValueError('Детализация не совпала с итогом начисления; автоматическое распределение остановлено')
+            original_sum=sum((money(r['amount']) for r in parts),ZERO)
+            final_parts=[dict(r) for r in parts]
+            for suffix,(amount,article,name) in final_commissions.items():
+                identifier=PREFIX+raw['id']+':'+suffix
+                final_parts=[r for r in final_parts if r['id']!=identifier]
+                if amount:
+                    final_parts.append(dict(id=identifier,day=raw['day'],order_no=order,sku=article,
+                        name=names.get(article,name),kind='commission' if amount<=0 else 'service_refund',amount=str(amount),qty='0'))
+            for index,(amount,article,name) in final_deliveries.items():
+                prefix=PREFIX+raw['id']+':'+index+':delivery'
+                final_parts=[r for r in final_parts if not (r['id']==prefix or r['id'].startswith(prefix+':'))]
+                if amount:
+                    final_parts.append(dict(id=prefix+':total',day=raw['day'],order_no=order,sku=article,
+                        name=names.get(article,name),kind='logistics' if amount<=0 else 'logistics_refund',amount=str(amount),qty='0'))
+            final_sum=sum((money(r['amount']) for r in final_parts),ZERO)
+            if final_sum==actual:parts=final_parts
+            elif original_sum!=actual:
+                raise ValueError(f'Детализация не совпала с итогом: итог API {actual}; по итоговым комиссиям/доставке {final_sum}; по исходным компонентам {original_sum}. Нужна проверка данных начисления.')
             rows.extend(parts)
         except ValueError as exc:
             issues.append(f'{raw["day"]}, {raw["id"]}: {exc}')
@@ -190,3 +212,38 @@ def restore_previous(db,start,end):
             tuple(r[k] for k in ('id','day','order_no','sku','name','kind','amount','qty','source')) for r in original])
         db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[
             ('api_profit_enabled','0'),('api_profit_error','Автопересчёт API отключён после восстановления предыдущих операций.')])
+
+
+def diagnostics(db,projection):
+    """Minimal user-downloadable financial packet. No keys, buyers or raw payloads."""
+    entries=[];order_ids=set();skus=set()
+    for raw in db.execute('SELECT * FROM api_finance WHERE day BETWEEN ? AND ? ORDER BY day,id',(projection.start,projection.end)):
+        marker=f'{raw["day"]}, {raw["id"]}:'
+        if not any(marker in issue for issue in projection.issues):continue
+        p=json.loads(raw['payload']);number=p.get('posting',{}).get('posting_number','')
+        record={'id':raw['id'],'date':raw['day'],'total':str(money(raw['amount'])),
+                'category':p.get('operation_type'),'posting_number':number,'products':[]}
+        order_ids.add(number)
+        def amount(v):
+            try:return str(money(v['amount'])) if isinstance(v,dict) and v.get('amount') is not None else None
+            except ValueError:return None
+        for item in p.get('items',[]):
+            sku=str(item.get('sku') or '');skus.add(sku)
+            commission=item.get('commission') or {};delivery=item.get('delivery') or {}
+            record['products'].append({'sku':sku,
+                'commission':{key:amount(commission.get(key)) for key in ('sale_amount','sale_price','seller_price','bonus','coinvestment','sale_commission','commission')},
+                'delivery_total':amount(delivery.get('total_accrued')),
+                'delivery_services':[{'type_id':v.get('type_id'),'amount':amount(v.get('accrued'))} for v in delivery.get('services',[])]})
+        entries.append(record)
+        if len(entries)>=100:break
+    orders=[]
+    for r in db.execute('SELECT posting_number,payload FROM api_postings'):
+        if r[0] not in order_ids:continue
+        p=json.loads(r[1])
+        orders.append({'posting_number':r[0],'products':[
+            {'sku':str(item.get('sku') or ''),'offer_id':item.get('offer_id'),'quantity':item.get('quantity')}
+            for item in p.get('products',[])]})
+    packet={'format':'ozon-profit-diagnostics-v1','period':[projection.start,projection.end],
+            'issues':projection.issues[:100],'accruals':entries,'postings':orders,
+            'sku_links':[dict(ozon_sku=r[0],offer_id=r[1]) for r in db.execute('SELECT ozon_sku,sku FROM product_links') if r[0] in skus]}
+    return json.dumps(packet,ensure_ascii=False,indent=2).encode('utf-8')

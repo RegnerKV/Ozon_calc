@@ -51,6 +51,9 @@ def posting(number='100-200-1'):
     return dict(posting_number=number,status='delivered',in_process_at='2026-08-01T00:00:00Z',
         customer={'name':'PRIVATE'},products=[{'sku':987,'offer_id':'demo','name':'Демо','quantity':2,'price':rub(25)}])
 
+def catalog_response():return Response({'items':[{'sku':987,'offer_id':'demo','name':'Демо'}]})
+
+
 def posting_response(items=None,more=False,cursor=''):
     return Response({'postings':items or [],'has_next':more,'cursor':cursor})
 
@@ -194,7 +197,7 @@ def test_atomic_snapshot_idempotency_and_corrections():
 
 def test_failed_later_method_does_not_destroy_finance_snapshot():
     db=connect(':memory:')
-    api,_,_=client([types_response(),day_response([accrual()]),posting_response(),posting_response()])
+    api,_,_=client([types_response(),day_response([accrual()]),posting_response(),posting_response(),catalog_response()])
     sync(db,api,DAY,DAY)
     stamp=db.execute("SELECT value FROM settings WHERE key='api_last_success'").fetchone()[0]
     api,_,_=client([types_response(),day_response([accrual(amount='1')]),Response(status=403)])
@@ -206,9 +209,9 @@ def test_failed_later_method_does_not_destroy_finance_snapshot():
 
 def test_finance_only_snapshot_deletes_disappeared_accrual():
     db=connect(':memory:')
-    api,session,_=client([types_response(),day_response([accrual()])])
+    api,session,_=client([types_response(),day_response([accrual()]),catalog_response()])
     sync(db,api,DAY,DAY,schemes=())
-    assert len(session.calls)==2
+    assert len(session.calls)==3
     api,_,_=client([types_response(),day_response([])])
     sync(db,api,DAY,DAY,schemes=())
     assert db.execute('SELECT count(*) FROM api_finance').fetchone()[0]==0
@@ -295,3 +298,43 @@ def test_error_like_200_response_cannot_erase_snapshot():
 def test_unknown_finance_envelope_not_treated_as_empty_day():
     api,_,_=client([types_response(),Response({'unexpected':[]})])
     with pytest.raises(ApiError):api.finances(SINCE,TO)
+
+
+def test_catalog_resolves_requested_sku_from_main_and_source_ids():
+    api,session,_=client([Response({'items':[{'sku':987,'offer_id':'demo','name':'Демо','sources':[{'sku':654}],
+        'unneeded':'PRIVATE'}]})])
+    products=api.products_by_sku(['654','987'])
+    assert {p['sku'] for p in products}=={'654','987'}
+    assert all(p['offer_id']=='demo' for p in products)
+    assert 'PRIVATE' not in json.dumps(products)
+    assert session.calls[0][0].endswith('/v3/product/info/list')
+    assert session.calls[0][1]['json']=={'sku':['654','987']}
+
+
+def test_unknown_catalog_sku_is_not_guessed_from_product_position():
+    api,_,_=client([Response({'items':[{'sku':111,'offer_id':'another','name':'Other'}]})])
+    assert api.products_by_sku(['987'])==[]
+
+
+def test_catalog_failure_preserves_financial_snapshot():
+    db=connect(':memory:')
+    api,_,_=client([types_response(),day_response([accrual()]),catalog_response()])
+    sync(db,api,DAY,DAY,schemes=())
+    with db:db.execute('DELETE FROM product_links')
+    api,_,_=client([types_response(),day_response([accrual(amount='1')]),Response(status=403)])
+    with pytest.raises(ApiError):sync(db,api,DAY,DAY,schemes=())
+    assert db.execute('SELECT amount FROM api_finance').fetchone()[0]=='20'
+    db.close()
+
+
+def test_resolve_already_staged_products_without_finance_request():
+    from ozon_profit.seller_api import resolve_product_links
+    db=connect(':memory:')
+    api,_,_=client([types_response(),day_response([accrual()]),catalog_response()])
+    sync(db,api,DAY,DAY,schemes=())
+    with db:db.execute('DELETE FROM product_links')
+    api,session,_=client([catalog_response()])
+    assert resolve_product_links(db,api,DAY,DAY)==1
+    assert len(session.calls)==1 and session.calls[0][0].endswith('/v3/product/info/list')
+    assert db.execute('SELECT sku FROM product_links WHERE ozon_sku=?',('987',)).fetchone()[0]=='demo'
+    db.close()

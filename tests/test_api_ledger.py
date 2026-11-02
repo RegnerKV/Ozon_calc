@@ -124,8 +124,10 @@ def test_unexplained_total_blocks_projection_without_adjustment_plug(db):
     with pytest.raises(ValueError):preview(db,p)
 
 
-def test_missing_original_commission_does_not_guess_from_final(db):
+def test_missing_original_commission_uses_reported_final_with_exact_balance(db):
     item=posting_accrual();del item['posting']['products'][0]['commission']['sale_commission']
+    stage(db,[item]);assert not project(db,START,END).issues
+    item['total_amount']=m(999)
     stage(db,[item]);assert project(db,START,END).issues
 
 
@@ -269,3 +271,52 @@ def test_single_cost_file_can_be_imported_for_api_products(db,tmp_path,monkeypat
     cost=saved.execute('SELECT amount FROM costs WHERE sku=?',('demo',)).fetchone()
     assert cost[0]=='80.005'
     saved.close()
+
+
+def test_reported_final_commission_with_markup_is_not_lost(db):
+    item=posting_accrual()
+    item['posting']['products'][0]['commission']['commission']=m(-100)
+    item['total_amount']=m(390)
+    stage(db,[item]);p=project(db,START,END)
+    assert not p.issues
+    amounts={r['kind']:D(r['amount']) for r in p.rows}
+    assert amounts['commission']==-205 and amounts['points']==100 and amounts['partner']==5
+    assert sum(D(r['amount']) for r in p.rows)==390
+    assert preview(db,p)['tax']==20
+
+
+def test_reported_delivery_total_replaces_service_breakdown(db):
+    item=posting_accrual()
+    item['posting']['products'][0]['delivery']['services'][0]['accrued']=m(-8)
+    stage(db,[item]);p=project(db,START,END)
+    assert not p.issues
+    assert sum(D(r['amount']) for r in p.rows if r['kind']=='logistics')==-10
+    assert p.net==395
+
+
+def test_neither_known_decomposition_can_plug_arbitrary_difference(db):
+    item=posting_accrual()
+    item['posting']['products'][0]['commission']['commission']=m(-100)
+    item['total_amount']=m(777)
+    stage(db,[item]);p=project(db,START,END)
+    assert p.issues
+    with pytest.raises(ValueError):promote(db,START,END)
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0
+
+
+def test_diagnostic_packet_whitelists_fields_and_does_not_mutate(db):
+    from ozon_profit.api_ledger import diagnostics
+    item=posting_accrual();item['total_amount']=m(999)
+    stage(db,[item])
+    with db:
+        raw=db.execute('SELECT id,payload FROM api_finance').fetchone()
+        p=json.loads(raw['payload']);p['Api-Key']='PRIVATE-TEST-SECRET';p['customer']={'address':'PRIVATE-ADDRESS'}
+        db.execute('UPDATE api_finance SET payload=? WHERE id=?',(json.dumps(p),raw['id']))
+    projection=project(db,START,END)
+    blob=diagnostics(db,projection)
+    assert b'PRIVATE-TEST-SECRET' not in blob and b'PRIVATE-ADDRESS' not in blob
+    packet=json.loads(blob)
+    assert packet['accruals'][0]['total']=='999'
+    assert packet['accruals'][0]['products'][0]['commission']['sale_commission']=='-200'
+    assert packet['postings'][0]['products'][0]['offer_id']=='demo'
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0

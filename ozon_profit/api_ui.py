@@ -138,7 +138,7 @@ def connection_ui(db):
 
 
 def profit_ui(db,start,end):
-    from .api_ledger import project,preview,promote,restore_previous
+    from .api_ledger import project,preview,promote,restore_previous,diagnostics
     st.subheader('Прибыль по данным API')
     bases={'sales':'Только реализация','sales_partner':'Реализация + программы партнёров',
            'sales_points':'Реализация + баллы','sales_points_partner':'Реализация + баллы + программы партнёров',
@@ -150,6 +150,24 @@ def profit_ui(db,start,end):
     if projection.issues:
         st.warning('Прибыль API пока не включена для этого периода: требуется сопоставление.')
         st.dataframe(pd.DataFrame({'Что проверить':projection.issues}),width='stretch',hide_index=True)
+        if st.button('Сопоставить SKU автоматически',key='api_resolve_products'):
+            pair=active_credentials()
+            if not pair:st.error('Сначала сохраните Client ID и ключ в форме подключения.')
+            else:
+                from .seller_api import resolve_product_links
+                client=SellerClient(*pair)
+                try:
+                    with st.spinner('Получаем артикулы из справочника Ozon…'):
+                        found=resolve_product_links(db,client,start,end)
+                    if found:st.rerun()
+                    else:st.info('Новых соответствий не найдено. Можно загрузить отправления или подготовить диагностику ниже.')
+                except ApiError as exc:st.error(str(exc))
+                except Exception:st.error('Сопоставление не завершено; финансовые записи не изменены.')
+                finally:client.close()
+        st.download_button('Скачать диагностику сопоставления',diagnostics(db,projection),
+                           'ozon-profit-diagnostics.json','application/json',key='api_profit_diagnostics')
+        st.caption('Диагностика содержит финансовые суммы и SKU проблемных начислений, но не ключ, покупателей или их адреса. При необходимости прикрепите файл в наш чат для разбора; не публикуйте его на GitHub.')
+
         st.caption('Если не найдены артикулы или количество: снимите флажок «только финансовые начисления», выберите свои схемы FBO/FBS и загрузите данные ещё раз. Стоимость изделий задаётся отдельно в справочнике или через импорт исходных Excel.')
     else:
         result=preview(db,projection,selected)
@@ -157,7 +175,7 @@ def profit_ui(db,start,end):
         for col,(label,key) in zip(st.columns(len(labels)),labels):col.metric(label,f'{rub(result[key]):,.2f} ₽'.replace(',',' '))
         if result['missing'] or result['estimated']:
             st.warning(f'Неполный расчёт: {result["missing"]} продаж без стоимости, {result["estimated"]} с примерной себестоимостью. Исправьте справочник; показанная прибыль может быть завышена.')
-        st.caption('Вычисление по API: исходная комиссия и баллы учитываются один раз; итоговая комиссия не прибавляется повторно. Возврат выручки не означает физический возврат товара в запас.')
+        st.caption('Вычисление по API проверено по итогу начисления: итоговая комиссия и доставка используются без повторного сложения с их детализацией; баллы и партнёрские выплаты выделяются для налоговой базы. Возврат выручки не означает физический возврат товара в запас.')
         approved=st.checkbox('Использовать API для прибыли: заменить операции Ozon из Excel за выбранный период и пересчитывать обновляемые периоды после следующих загрузок. Предыдущие операции сохранить в резервной копии.',key='api_profit_approve')
         if st.button('Включить прибыль API',disabled=not approved,key='api_profit_enable'):
             try:
@@ -181,6 +199,8 @@ def cost_upload_ui(db,since):
             if p.get('offer_id'):
                 article=str(p['offer_id'])
                 products[article]={'name':str(p.get('name') or article),'sku':article}
+    for row in db.execute('SELECT l.sku,p.name FROM product_links l LEFT JOIN products p ON p.sku=l.sku'):
+        products.setdefault(row[0],{'sku':row[0],'name':row[1] or row[0]})
     if not products:return
     with st.expander('Загрузить себестоимость для товаров API'):
         st.caption('Достаточно одного файла «Себестоимость.xlsx». Итоги с упаковкой читаются из листа «Украшения». Уже сохранённая история остаётся; запись на ту же дату заменяется. Оценки «Малин» по «Рыбе» останутся примерными.')
