@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.db
+*.db-*
+*.xlsx
+*.xls
+.env
+.streamlit/secrets.toml
+build/
+dist/
+*.spec
+*.credentials
+.credential-*

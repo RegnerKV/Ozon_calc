@@ -1,0 +1,52 @@
+name: Windows application
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-dev.txt pyinstaller==6.16.0
+      - run: python -m pytest -q
+      - name: Build standalone application
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onedir --name OzonProfit
+          --collect-all streamlit --collect-all plotly --collect-all pandas
+          --collect-all openpyxl --collect-all ozon_profit
+          --copy-metadata streamlit --add-data "app.py;." launcher.py
+      - name: Check executable starts
+        shell: pwsh
+        run: |
+          $env:BROWSER = 'none'
+          $env:OZON_PROFIT_DATA_DIR = Join-Path $env:RUNNER_TEMP 'ozon-smoke-data'
+          $process = Start-Process dist/OzonProfit/OzonProfit.exe -PassThru -RedirectStandardOutput smoke.log -RedirectStandardError smoke-error.log
+          try {
+            $healthy = $false
+            for ($i=0; $i -lt 60; $i++) {
+              Start-Sleep -Seconds 1
+              if ($process.HasExited) { throw 'Application exited before readiness' }
+              $lines = Get-Content smoke.log -Raw -ErrorAction SilentlyContinue
+              if ($lines -match 'http://127\.0\.0\.1:(\d+)') {
+                try {
+                  $response = Invoke-WebRequest "http://127.0.0.1:$($Matches[1])/_stcore/health" -TimeoutSec 2
+                  if ($response.StatusCode -eq 200) { $healthy = $true; break }
+                } catch {}
+              }
+            }
+            if (-not $healthy) { throw 'Application health check failed' }
+          } finally {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          }
+      - run: Copy-Item WINDOWS.txt dist/OzonProfit/ПРОЧИТАЙТЕ.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OzonProfit-Windows
+          path: dist/OzonProfit/
+          retention-days: 30
