@@ -9,6 +9,7 @@ import hashlib
 import json
 import time as clock
 import requests
+import re
 from .core import money
 from .credentials import validate
 
@@ -21,16 +22,18 @@ class ApiError(Exception):
 
 
 class ApiHttpError(ApiError):
-    def __init__(self,endpoint,status):
+    def __init__(self,endpoint,status,provider_detail=''):
         self.endpoint=endpoint
         self.status=int(status)
         message=f'POST {endpoint}: HTTP {self.status}. '
         if self.status==404:
-            message+='Адрес метода не найден. Требуется проверить версию метода; это не доказательство неверного ключа.'
+            message+='Сервер вернул «не найдено». Нужно проверить ответ Ozon, адрес метода и доступ; причина по одному HTTP-коду не установлена.'
         elif self.status in (401,403):
             message+='Доступ отклонён. Проверьте ключ и разрешения; необходимость Premium не установлена.'
         else:
             message+='Запрос не выполнен. Требуется проверить параметры и актуальность метода.'
+        self.provider_detail=provider_detail
+        if provider_detail:message+=' Ответ Ozon: '+provider_detail
         super().__init__(message)
 
 
@@ -64,6 +67,25 @@ class SellerClient:
         self.session.close()
         self._api_key=''
 
+    def _error_detail(self,response):
+        # Extract only structured error fields; never expose full bodies or headers.
+        try:data=response.json()
+        except (ValueError,TypeError):return ''
+        if not isinstance(data,dict):return ''
+        parts=[]
+        code=data.get('code')
+        if isinstance(code,int) and not isinstance(code,bool):parts.append(f'code={code}')
+        elif isinstance(code,str) and re.fullmatch(r'[A-Za-z_][A-Za-z_0-9.-]{0,63}',code):parts.append('code='+code)
+        message=data.get('message')
+        if isinstance(message,str):parts.append(message)
+        # Values of failed fields are not copied; provider text is redacted below.
+        text='; '.join(parts)
+        for secret in (self._api_key,self.client_id):
+            if secret:text=text.replace(secret,'[скрыто]')
+        if re.search(r'api[-_ ]?key|client[-_ ]?id|authorization|bearer',text,re.I):
+            return 'Пояснение скрыто, поскольку упоминает данные авторизации.'
+        return re.sub(r'\s+',' ',text).strip()[:600]
+
     def post(self,endpoint,payload):
         if endpoint not in ENDPOINTS.values():raise ApiError('Недопустимый метод API')
         for attempt in range(4):
@@ -75,7 +97,7 @@ class SellerClient:
                 if attempt<3:self.sleep(2**attempt);continue
                 raise ApiError('Нет соединения с Ozon. Проверьте интернет и доступ к api-seller.ozon.ru. Сохранённые данные не изменены.') from None
             if response.status_code in (401,403):
-                raise ApiHttpError(endpoint,response.status_code)
+                raise ApiHttpError(endpoint,response.status_code,self._error_detail(response))
             if response.status_code==429 or 500<=response.status_code<600:
                 if attempt<3:
                     try:delay=float(response.headers.get('Retry-After',2**attempt))
@@ -83,7 +105,7 @@ class SellerClient:
                     self.sleep(min(30,max(0,delay)));continue
                 raise ApiError('Ozon временно недоступен или ограничил частоту запросов. Повторите обновление позже.')
             if response.status_code!=200:
-                raise ApiHttpError(endpoint,response.status_code)
+                raise ApiHttpError(endpoint,response.status_code,self._error_detail(response))
             try:
                 data=response.json(parse_float=Decimal)
             except (ValueError,TypeError):raise ApiError('Ozon вернул ответ неизвестного формата') from None
@@ -96,8 +118,8 @@ class SellerClient:
         first,last,since,to=next(windows(day,day))
         payloads={
             'finance':{'filter':{'date':{'from':since,'to':to},'operation_type':[],'posting_number':'','transaction_type':'all'},'page':1,'page_size':1},
-            'fbo':{'dir':'ASC','filter':{'since':since,'to':to,'status':''},'limit':1,'offset':0,'with':{'analytics_data':False,'financial_data':False}},
-            'fbs':{'dir':'ASC','filter':{'since':since,'to':to,'status':''},'limit':1,'offset':0,'with':{'analytics_data':False,'financial_data':False}},
+            'fbo':{'dir':'ASC','filter':{'since':since,'to':to},'limit':1,'offset':0,'with':{'analytics_data':False,'financial_data':False}},
+            'fbs':{'dir':'ASC','filter':{'since':since,'to':to},'limit':1,'offset':0,'with':{'analytics_data':False,'financial_data':False}},
         }
         statuses=[]
         for name,endpoint in ENDPOINTS.items():
@@ -133,7 +155,7 @@ class SellerClient:
         if kind not in ('fbo','fbs'):raise ApiError('Неизвестная схема работы')
         result=[];seen=set();limit=1000;offset=0
         for _ in range(10000):
-            payload={'dir':'ASC','filter':{'since':since,'to':to,'status':''},'limit':limit,'offset':offset,
+            payload={'dir':'ASC','filter':{'since':since,'to':to},'limit':limit,'offset':offset,
                      'with':{'analytics_data':False,'financial_data':False}}
             raw=self.post(ENDPOINTS[kind],payload)
             if kind=='fbo':

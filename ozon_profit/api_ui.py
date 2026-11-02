@@ -67,12 +67,16 @@ def connection_ui(db):
                 with st.spinner('Проверяем методы Ozon…'):
                     statuses=client.diagnose(datetime.now(timezone(timedelta(hours=3))).date()-timedelta(days=1))
                 st.dataframe(pd.DataFrame(statuses),width='stretch',hide_index=True)
+                st.session_state['_api_diagnostic_text']='\n\n'.join(row['Метод']+'\n'+row['Результат'] for row in statuses)
             except ApiError as exc:
                 st.error(str(exc))
             except Exception:
                 st.error('Проверка не завершена. Сохранённые данные не изменены.')
             finally:
                 client.close()
+    if st.session_state.get('_api_diagnostic_text'):
+        st.caption('Полный текст диагностики (без обрезания столбцов):')
+        st.code(st.session_state['_api_diagnostic_text'],language=None,wrap_lines=True)
     st.subheader('Проверочная загрузка')
     today=datetime.now(timezone(timedelta(hours=3))).date()
     first=st.date_input('Начало загрузки',today-timedelta(days=89),key='api_since')

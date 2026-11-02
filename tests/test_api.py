@@ -228,3 +228,41 @@ def test_finance_only_sync_does_not_call_postings():
     assert len(session.calls)==1
     assert db.execute("SELECT value FROM settings WHERE key='api_components'").fetchone()[0]=='finance'
     db.close()
+
+
+def test_structured_provider_validation_message_is_visible():
+    class ValidationResponse(Response):
+        def json(self,**kwargs):
+            return {'code':3,'message':'invalid field limit: value must be positive','other':'UNRELATED-DATA'}
+    api,_,_=client([ValidationResponse(status=400)])
+    with pytest.raises(ApiError) as caught:api.finances('from','to')
+    message=str(caught.value)
+    assert 'code=3' in message
+    assert 'invalid field limit' in message
+    assert 'UNRELATED-DATA' not in message
+
+
+def test_error_echo_redacts_credentials_and_omits_raw_bodies():
+    class Echo(Response):
+        def json(self,**kwargs):
+            return {'code':3,'message':f'invalid value {TEST_KEY} for 123','details':{'key':TEST_KEY}}
+    api,_,_=client([Echo(status=400)])
+    with pytest.raises(ApiError) as caught:api.finances('from','to')
+    message=str(caught.value)
+    assert TEST_KEY not in message
+    assert '123' not in caught.value.provider_detail
+    assert '[скрыто]' in message
+
+
+def test_auth_related_provider_message_is_hidden():
+    class Echo(Response):
+        def json(self,**kwargs):return {'message':'Api-Key is a confidential value'}
+    api,_,_=client([Echo(status=403)])
+    with pytest.raises(ApiError) as caught:api.finances('from','to')
+    assert 'confidential value' not in str(caught.value)
+
+
+def test_posting_requests_do_not_send_empty_status():
+    api,session,_=client([Response([])])
+    api.postings('fbo','from','to')
+    assert 'status' not in session.calls[0][1]['json']['filter']
