@@ -78,9 +78,12 @@ def main():
             page=browser.new_page(viewport={'width':1440,'height':1100})
             page.goto(url)
             expect(page.get_by_role('heading',name='Ваша прибыль — на одном экране')).to_be_visible(timeout=90000)
-            page.get_by_label('Период',exact=True).click()
+            page.get_by_role('combobox',name=re.compile(r'Период$')).click()
             page.get_by_text('Свои даты',exact=True).click()
             expect(page.get_by_text('765,31 ₽',exact=True)).to_be_visible()
+            page.get_by_test_id('stSelectbox').filter(has_text='Динамика').locator('[data-baseweb="select"]').click()
+            page.get_by_role('option',name='Реализация покупателям',exact=True).click()
+            assert page.get_by_test_id('stException').count()==0
             sidebar=page.get_by_test_id('stSidebar')
             sidebar.get_by_text('Товары',exact=True).click()
             expect(page.get_by_role('heading',name='Товары и себестоимость')).to_be_visible()
