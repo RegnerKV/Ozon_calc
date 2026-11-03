@@ -38,6 +38,9 @@ if st.session_state.get('_seller_pair') and not db.execute('SELECT 1 FROM secure
         try:save_api_credentials(db,*st.session_state['_seller_pair'])
         except StorageError:pass
 try:
+    from ozon_profit.catalog import apply_library
+    if get_setting(db,'fish_cost_policy',None) is None:set_setting(db,'fish_cost_policy','1')
+    apply_library(db)
     ensure_profit(db)
     if not st.session_state.get('_auto_attempted'):
         st.session_state['_auto_attempted']=True

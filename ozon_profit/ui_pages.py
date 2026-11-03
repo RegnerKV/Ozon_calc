@@ -179,6 +179,7 @@ def overview(db):
 def products_page(db):
     from .catalog import import_library
     st.header('Товары и себестоимость')
+    st.caption('Для товаров без собственной стоимости применяется себестоимость подвески «Рыба» с упаковкой — принятая вами стоимость для расчёта. Своя стоимость товара имеет приоритет.')
     total=db.execute('SELECT count(DISTINCT sku) FROM costs').fetchone()[0]
     st.caption(f'Стоимость сохранена для {total} товаров. Загружать файл повторно не нужно.')
     with st.expander('Загрузить или обновить себестоимость',expanded=total==0):

@@ -430,6 +430,7 @@ def test_dashboard_ui_explains_missing_cost_instead_of_zero_receipts(db,tmp_path
     import sqlite3
     stage(db,[posting_accrual()])
     db.execute('DELETE FROM costs');db.commit()
+    set_setting(db,'fish_cost_policy','0')
     target=sqlite3.connect(tmp_path/'profit.db');db.backup(target);target.close()
     monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
     app=AppTest.from_file('app.py').run()
