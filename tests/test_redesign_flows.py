@@ -29,18 +29,18 @@ def test_plan_ui_persists_after_new_session_and_extra_ads_reduce_profit(tmp_path
     app.selectbox(key='plan_product').set_value('demo')
     next(b for b in app.button if b.label=='Добавить в план').click().run()
     assert not app.exception
-    assert any(m.value=='2 050,00 ₽' for m in app.metric)
+    assert any(m.value=='2 250,00 ₽' for m in app.metric)
     app.selectbox(key='plan_product').set_value('new')
     app.number_input(key='plan_price').set_value(100)
     next(b for b in app.button if b.label=='Добавить в план').click().run()
-    app.number_input(key='plan_ad_extra').set_value(5).run()
+    app.number_input(key='plan_ad_budget').set_value(500).run()
     assert not app.exception
-    assert any(m.value=='3 100,00 ₽' for m in app.metric)
+    assert any(m.value=='3 500,00 ₽' for m in app.metric)
     reopened=AppTest.from_file('app.py').run()
     reopened.sidebar.radio[0].set_value('План продаж').run()
     assert not reopened.exception
-    assert reopened.number_input(key='plan_ad_extra').value==5
-    assert any(m.value=='3 100,00 ₽' for m in reopened.metric)
+    assert reopened.number_input(key='plan_ad_budget').value==500
+    assert any(m.value=='3 500,00 ₽' for m in reopened.metric)
     db=connect(tmp_path/'profit.db')
     assert calculate(db,'2026-08-01','2026-08-31')['net']==650
     db.close()

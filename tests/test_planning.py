@@ -86,3 +86,33 @@ def test_multiple_products_and_loyalty_tax_are_separate(db):
     assert not r['issues']
     assert r['totals']['revenue']==1500 and r['totals']['points']==150
     assert r['totals']['tax']==66
+
+
+@pytest.mark.parametrize('percent',[0,6,8,10])
+def test_absolute_budget_plus_order_percent_replaces_all_historical_ads(db,percent):
+    r=forecast(db,[{'sku':'demo','quantity':50}], '2026-12-01','2026-12-31',
+               '2026-08-01','2026-08-31',ad_budget=500,order_ad_percent=percent)
+    t=r['totals']
+    assert not r['issues']
+    assert t['click_advertising']==500
+    assert t['order_advertising']==D(5000)*percent/100
+    assert t['advertising']==500+D(5000)*percent/100
+    assert t['profit']==D(2550)-500-D(5000)*percent/100
+
+
+def test_budget_is_once_for_all_articles_and_fixed_when_quantity_changes(db):
+    items=[{'sku':'demo','quantity':10},{'sku':'new','quantity':3,'price':101}]
+    r=forecast(db,items,'2026-12-01','2026-12-31','2026-08-01','2026-08-31',ad_budget=5000,order_ad_percent=6)
+    assert r['totals']['click_advertising']==5000
+    assert sum(row['advertising'] for row in r['rows'])==r['totals']['advertising']
+    items[0]['quantity']=20
+    r=forecast(db,items,'2026-12-01','2026-12-31','2026-08-01','2026-08-31',ad_budget=5000,order_ad_percent=0)
+    assert r['totals']['advertising']==5000
+
+
+def test_net_tax_uses_new_ad_budget_and_order_charge_once(db):
+    set_setting(db,'tax_base','net')
+    r=forecast(db,[{'sku':'demo','quantity':50}], '2026-12-01','2026-12-31',
+               '2026-08-01','2026-08-31',ad_budget=500,order_ad_percent=6)
+    assert r['totals']['tax']==118
+    assert r['totals']['profit']==1832

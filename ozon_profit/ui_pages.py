@@ -120,6 +120,10 @@ def overview(db):
     top[0].metric('Чистая прибыль · предварительно',_profit(result))
     top[1].metric('Реализация покупателям',cash(result['revenue']) if not result['stale_api'] else 'Нужен пересчёт')
     top[2].metric('Начислено Ozon',cash(result['net']))
+    from .advertising import drr
+    advertising=drr(result['details'])
+    st.metric('ДРР магазина за период',f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации')
+    if advertising['unassigned']>0:st.caption('Реклама без привязки к артикулу: '+cash(advertising['unassigned'])+'. Она включена в ДРР магазина; полный ДРР отдельных товаров не определён. Общие расходы не распределяются произвольно.')
     frame=details_frame(result['details'])
     ads=sum(((-money(r['amount'])) for r in result['details'] if r['kind'] in ('Реклама','Возврат расходов на рекламу')),money(0))
     row=st.columns(4)
@@ -151,8 +155,10 @@ def overview(db):
             st.dataframe(report,hide_index=True,width='stretch')
         st.subheader('Результат по товарам')
         products=frame[frame.sku!=''].groupby('sku').agg(name=('name','first'),amount=('amount','sum'),cost=('cost','sum'),tax=('tax','sum'),profit=('profit','sum')).reset_index()
+        products['advertising']=products['sku'].map(lambda sku:float(advertising['products'].get(sku,{}).get('advertising',0)))
+        products['drr']=products['sku'].map(lambda sku:float(advertising['products'][sku]['drr']) if sku in advertising['products'] and advertising['products'][sku]['drr'] is not None else None)
         if result['missing'] or result['stale_api']:products['profit']=None
-        st.dataframe(products.rename(columns={'sku':'Артикул','name':'Изделие','amount':'Начисления, ₽','cost':'Себестоимость, ₽','tax':'Налог, ₽','profit':'Результат, ₽'}),hide_index=True,width='stretch')
+        st.dataframe(products.rename(columns={'sku':'Артикул','name':'Изделие','amount':'Начисления, ₽','cost':'Себестоимость, ₽','tax':'Налог, ₽','profit':'Результат, ₽','advertising':'Реклама с привязкой, ₽','drr':'ДРР артикула, %'}),hide_index=True,width='stretch')
         st.caption('Общие расходы магазина не распределяются между товарами и заказами.')
         with st.expander('Посмотреть заказы и операции'):
             order=st.text_input('Номер отправления',key='order_filter')

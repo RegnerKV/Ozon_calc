@@ -441,3 +441,14 @@ def test_dashboard_ui_explains_missing_cost_instead_of_zero_receipts(db,tmp_path
     assert metrics['Чистая прибыль · предварительно']=='Нужна себестоимость'
     assert any('на дату продажи' in warning.value for warning in app.warning)
     assert any('Дата продажи' in frame.value.columns for frame in app.dataframe)
+
+
+def test_sales_plan_reads_staged_history_even_without_promoted_operations(db):
+    from ozon_profit.planning import forecast
+    stage(db,[posting_accrual()])
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0
+    r=forecast(db,[{'sku':'demo','quantity':50}], '2026-12-01','2026-12-31',START,END,
+               ad_budget=500,order_ad_percent=6)
+    assert not r['issues']
+    assert r['totals']['profit']==D('4124.750')
+    assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0
