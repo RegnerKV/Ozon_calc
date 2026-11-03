@@ -33,7 +33,7 @@ def _value(container,key):
 def _fee_kind(amount,label):
     label=label.casefold()
     if 'компенсац' in label:return 'compensation'
-    if any(x in label for x in ('реклам','продвижен')):return 'advertising' if amount<=0 else 'advertising_refund'
+    if any(x in label for x in ('реклам','продвижен','payperclick','promotion','pay_per_click')):return 'advertising' if amount<=0 else 'advertising_refund'
     if any(x in label for x in ('достав','логист','возвратов','невыкуп')):return 'logistics' if amount<=0 else 'logistics_refund'
     if any(x in label for x in ('комисс','вознагражден')):return 'commission' if amount<=0 else 'service_refund'
     if any(x in label for x in ('выручк','реализац')):raise ValueError('Выручка без данных продажи требует сопоставления')
@@ -181,7 +181,7 @@ def promote(db,start,end,tax_base=None,enable=False):
             _replace(db,projection)
         db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[
             ('ledger_mode','detail'),('api_profit_last_success',get_setting(db,'api_last_success')),
-            ('api_profit_error',''),('report_start',str(start)),('report_end',str(end)),
+            ('api_profit_error',''),('ads_classification_version','english-ads-v1'),('report_start',str(start)),('report_end',str(end)),
         ])
         if tax_base:db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',('tax_base',tax_base))
         if enable:db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',('api_profit_enabled','1'))

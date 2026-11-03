@@ -32,7 +32,7 @@ def require_login():
     try:password=st.secrets.get('app_password','')
     except (FileNotFoundError,st.errors.StreamlitSecretNotFoundError):password=''
     if not isinstance(password,str) or len(password)<12:
-        st.title('💎 Ozon Profit')
+        st.title('Ozon Profit')
         st.info('Доступ закрыт. Владелец приложения должен задать пароль длиной не менее 12 символов в настройке Secrets: app_password. Финансовые данные до входа недоступны.')
         st.stop()
     tag=hashlib.sha256(password.encode()).hexdigest()
@@ -42,7 +42,7 @@ def require_login():
             st.session_state.clear()
             st.rerun()
         return
-    st.title('💎 Ozon Profit')
+    st.title('Ozon Profit')
     with st.form('owner_login'):
         candidate=st.text_input('Пароль приложения',type='password',key='_owner_password')
         submit=st.form_submit_button('Войти')

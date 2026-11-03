@@ -454,3 +454,22 @@ def test_sales_plan_reads_staged_history_even_without_promoted_operations(db):
     assert not r['issues']
     assert r['totals']['profit']==D('4124.750')
     assert db.execute('SELECT count(*) FROM operations').fetchone()[0]==0
+
+
+def test_english_cpc_and_order_ads_are_reclassified_without_changing_profit(db):
+    from ozon_profit.advertising import drr
+    from ozon_profit.overview_reports import service_breakdown
+    stage(db,[posting_accrual()])
+    for identifier,label,amount in [(80,'PayPerClick',-30),(81,'Promotion',-20),(82,'Acquiring',-5)]:
+        raw=dict(accrual_id=identifier,date=START,accrued_category='NON_ITEM',total_amount=m(amount),non_item_fee={'type_id':identifier,'accrued':m(amount)})
+        row=clean_finance(raw,date.fromisoformat(START),{str(identifier):label})
+        db.execute('INSERT INTO api_finance VALUES(?,?,?,?)',(row['id'],row['day'],row['amount'],json.dumps(row['payload'])))
+    db.commit()
+    p=project(db,START,END);r=preview(db,p)
+    assert not p.issues and r['profit']==D('159.990')
+    assert drr(r['details'])['advertising']==50
+    assert service_breakdown(db,START,END)==[{'Категория услуги':'Эквайринг','Сумма, ₽':-5.0}]
+    assert {row['Категория услуги'] for row in service_breakdown(db,START,END,'advertising')}=={'Оплата за клик','Продвижение — оплата за заказ'}
+    from ozon_profit.planning import forecast
+    plan=forecast(db,[{'sku':'demo','quantity':2}], '2026-12-01','2026-12-31',START,END,ad_budget=10,order_ad_percent=0)
+    assert plan['totals']['profit']==D('199.990')

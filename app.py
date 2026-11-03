@@ -9,17 +9,42 @@ from ozon_profit.seller_api import init_tables,ApiError
 from ozon_profit.ui_pages import overview,products_page,settings_page,ensure_profit,refresh,today
 from ozon_profit.api_ui import active_credentials
 
-st.set_page_config(page_title='Ozon Profit',page_icon='💎',layout='wide')
+st.set_page_config(page_title='Ozon Profit',page_icon='O',layout='wide')
 require_login()
 st.markdown('''<style>
-.stApp{background:#f8f7f4;color:#182336}
+.stApp{background:#f5f7fb;color:#17243a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.brand{font-size:2.15rem;font-weight:700;letter-spacing:-.055em;padding:12px 0 8px;color:#18325d}
+[data-testid="stSidebar"] [role="radiogroup"]{gap:12px}
+[data-testid="stSidebar"] [role="radiogroup"]>label{border:1px solid #c7d8f4;border-radius:16px;background:#f6f9ff;padding:15px 18px!important;transition:background .15s;min-height:58px;width:100%}
+[data-testid="stSidebar"] [role="radiogroup"]>label>div:first-child{position:absolute;opacity:0;width:1px;height:1px;overflow:hidden}
+[data-testid="stSidebar"] [role="radiogroup"]>label p{font-size:1.12rem;font-weight:600;color:#244981}
+[data-testid="stSidebar"] [role="radiogroup"]>label:has(input:checked){background:#e7efff;border-color:#6e9be4;box-shadow:0 3px 12px #194e9b0a}
+[data-testid="stSidebar"] [role="radiogroup"]>label:hover{background:#edf3ff}
+[data-testid="stSidebar"] [role="radiogroup"]>label:focus-within{outline:2px solid #6e9be4;outline-offset:3px}
+[data-testid="stSidebar"] [role="radiogroup"]>label::before{content:"";display:inline-block;width:20px;height:20px;flex-shrink:0;background-size:20px 20px;background-repeat:no-repeat;margin-right:12px}
+[data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(1)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%273%27%20y%3D%273%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%273%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3Crect%20x%3D%273%27%20y%3D%2714%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%2714%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3C%2Fsvg%3E");}
+[data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(2)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M5%208h14l1%2013H4L5%208zM8%208V6a4%204%200%20018%200v2%27%2F%3E%3C%2Fsvg%3E");}
+[data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(3)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M3%204v16h18M6%2015l5-5%204%203%206-8%27%2F%3E%3C%2Fsvg%3E");}
+[data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(4)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M4%207h16M4%2017h16%27%2F%3E%3Ccircle%20cx%3D%279%27%20cy%3D%277%27%20r%3D%273%27%20fill%3D%27white%27%2F%3E%3Ccircle%20cx%3D%2715%27%20cy%3D%2717%27%20r%3D%273%27%20fill%3D%27white%27%2F%3E%3C%2Fsvg%3E");}
+.ozon-expenses{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;border:1px solid #e1e7f0;border-radius:16px;overflow:hidden;background:white;font-size:15px}
+.ozon-expenses th{text-align:left;padding:13px 16px;color:#67758a;font-weight:500;background:#f9fbfe}
+.ozon-expenses td{padding:13px 16px;border-top:1px solid #edf0f5}
+.ozon-expenses td:last-child,.ozon-expenses th:last-child{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ozon-expenses td.tree{padding:0;text-align:left;white-space:normal}
+.ozon-expenses summary{display:flex;justify-content:space-between;align-items:center;padding:13px 16px;cursor:pointer;list-style:none;font-weight:600}
+.ozon-expenses summary::-webkit-details-marker{display:none}
+.ozon-expenses .tree-title::before{content:"›";display:inline-block;margin-right:10px;color:#577eb7}
+.ozon-expenses details[open] .tree-title::before{transform:rotate(90deg)}
+.ozon-expenses .child{display:flex;justify-content:space-between;gap:12px;padding:10px 16px 10px 35px;border-top:1px solid #f0f3f7;background:#f8faff;color:#506078;font-size:14px}
+.ozon-expenses .child span:first-child{white-space:normal;overflow-wrap:anywhere}
+.ozon-expenses .child span:last-child{flex-shrink:0;font-variant-numeric:tabular-nums;white-space:nowrap}
 .block-container{max-width:1320px;padding-top:4rem;padding-bottom:3rem}
 h1,h2,h3{letter-spacing:-.035em;color:#182336}
 [data-testid="stSidebar"]{background:#fff;border-right:1px solid #e8e7e3}
 [data-testid="stMetric"]{background:#fff;border:1px solid #ebe9e3;border-radius:18px;padding:20px 22px;box-shadow:0 4px 22px rgba(30,35,55,.025)}
 [data-testid="stMetricValue"]{font-variant-numeric:tabular-nums;font-size:1.85rem;letter-spacing:-.04em}
 [data-testid="stMetricLabel"]{color:#6a7283;font-size:.85rem}
-.stButton>button[kind="primary"]{background:#5369d8;border-color:#5369d8;border-radius:10px}
+.stButton>button[kind="primary"]{background:#3779ed;border-color:#3779ed;border-radius:10px}
 [data-testid="stExpander"]{background:rgba(255,255,255,.7);border-radius:14px;border-color:#e8e7e3}
 [data-testid="stAlert"]{border-radius:12px}
 </style>''',unsafe_allow_html=True)
@@ -27,7 +52,7 @@ try:manager=state_manager()
 except StorageError as exc:
     st.error(str(exc));st.info('Данные не сбрасывались. Проверьте настройки постоянного хранилища в Secrets Streamlit.');st.stop()
 db=connect();init_tables(db)
-st.sidebar.markdown('## 💎 Ozon Profit')
+st.sidebar.markdown('<div class="brand">Ozon Profit</div>',unsafe_allow_html=True)
 st.sidebar.caption('Ваш магазин в цифрах')
 storage_status=st.sidebar.empty()
 page=st.sidebar.radio('Раздел',['Обзор','Товары','План продаж','Настройки'],label_visibility='collapsed')

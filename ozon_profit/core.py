@@ -212,7 +212,7 @@ def calculate(db, start, end):
         totals['tax'] += tax
         if row['kind'] in ('commission','logistics','advertising','service','service_refund','advertising_refund','logistics_refund') or (row['kind']=='adjustment' and amount<0):
             totals['expenses'] -= amount
-        details.append(dict(day=row['day'], order_no=row['order_no'], sku=row['sku'], name=row['name'], kind=KINDS[row['kind']], amount=amount, cost=cost, tax=tax, profit=amount-cost-tax, issue=issue))
+        details.append(dict(day=row['day'], order_no=row['order_no'], sku=row['sku'], name=row['name'], kind=KINDS[row['kind']], quantity=qty, amount=amount, cost=cost, tax=tax, profit=amount-cost-tax, issue=issue))
     # Negative tax from returns cannot create a withdrawal reserve credit.
     raw_tax = totals['tax']
     totals['tax'] = max(ZERO, raw_tax)

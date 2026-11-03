@@ -22,3 +22,14 @@ def test_service_breakdown_uses_actual_categories_and_excludes_ads():
     db.commit()
     assert service_breakdown(db,'2026-10-01','2026-10-31')==[{'Категория услуги':'Переупаковка','Сумма, ₽':-10.0}]
     db.close()
+
+
+def test_expandable_expenses_are_one_safe_inline_table():
+    from ozon_profit.core import connect
+    from ozon_profit.overview_reports import expenses_html
+    db=connect(':memory:')
+    result=dict(details=[dict(kind=KINDS['advertising'],amount=D(-30)),dict(kind=KINDS['service'],amount=D(-20))],costs=D(0),tax=D(0))
+    html=expenses_html(db,'2026-10-01','2026-10-31',result,'Налоги (4%)')
+    assert html.count('<table')==1 and html.count('<details>')==2
+    assert 'Реклама' in html and 'Прочие услуги' in html
+    db.close()

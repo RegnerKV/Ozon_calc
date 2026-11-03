@@ -27,7 +27,7 @@ def ensure_profit(db):
     if not get_setting(db,'api_last_success'):return
     a=get_setting(db,'api_start');b=get_setting(db,'api_end')
     if not a or not b:return
-    if get_setting(db,'api_profit_last_success')==get_setting(db,'api_last_success') and get_setting(db,'api_profit_enabled')=='1' and not calculate(db,a,b)['stale_api']:return
+    if get_setting(db,'api_profit_last_success')==get_setting(db,'api_last_success') and get_setting(db,'api_profit_enabled')=='1' and get_setting(db,'ads_classification_version')=='english-ads-v1' and not calculate(db,a,b)['stale_api']:return
     from .api_ledger import promote
     try:promote(db,a,b,tax_base=get_setting(db,'tax_base','sales'),enable=True)
     except ValueError as exc:
@@ -145,7 +145,7 @@ def overview(db):
     if not known_ads:
         for value in advertising['products'].values():value['drr']=None
     st.metric('ДРР магазина за период',(f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации') if known_ads else 'Нет данных рекламы')
-    if advertising['unassigned']>0:st.caption('Реклама без привязки к артикулу: '+cash(advertising['unassigned'])+'. Она включена в ДРР магазина; полный ДРР отдельных товаров не определён. Общие расходы не распределяются произвольно.')
+    if advertising['unassigned']>0:st.caption('Реклама без привязки к артикулу: '+cash(advertising['unassigned'])+'. Она включена в ДРР магазина; полный ДРР отдельных товаров не определён. Ниже доступна отдельно отмеченная оценка по товарам с распределением общих расходов.')
     frame=details_frame(result['details'])
     ads=sum(((-money(r['amount'])) for r in result['details'] if r['kind'] in ('Реклама','Возврат расходов на рекламу')),money(0))
     row=st.columns(4)
@@ -171,29 +171,49 @@ def overview(db):
             daily=plotted.groupby('day')['profit' if chart=='Чистая прибыль' else 'amount'].sum()
             daily=daily.reindex(pd.date_range(start,end).strftime('%Y-%m-%d'),fill_value=0)
             fig=go.Figure(go.Scatter(x=daily.index,y=daily.values,mode='lines+markers',fill='tozeroy',
-                line={'color':'#5369d8','width':3},marker={'size':5},fillcolor='rgba(83,105,216,.09)',hovertemplate='%{x}<br>%{y:,.2f} ₽<extra></extra>'))
+                line={'color':'#4c7bec','width':3},marker={'size':5},fillcolor='rgba(76,123,236,.08)',hovertemplate='%{x}<br>%{y:,.2f} ₽<extra></extra>'))
             fig.update_layout(height=270,margin=dict(l=0,r=10,t=10,b=0),paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',xaxis_title=None,yaxis_title='₽',showlegend=False)
+            ticks=list(daily.index)[::max(1,len(daily)//6)]
+            fig.update_xaxes(type='category',tickmode='array',tickvals=ticks,ticktext=[date.fromisoformat(value).strftime('%d.%m') for value in ticks])
             st.plotly_chart(fig,width='stretch')
         with right:
             st.subheader('На что уходят деньги')
-            from .overview_reports import cashflow,service_breakdown
-            st.dataframe(cashflow(result,tax_label),hide_index=True,width='stretch')
-            st.caption('Плюс — поступление, минус — удержание или возврат денег покупателю. Соинвест объединяет баллы за скидки и партнёрские выплаты; его отмена уменьшает сумму.')
-            with st.expander('Что входит в прочие услуги'):
-                services=service_breakdown(db,start,end)
-                if services:st.dataframe(pd.DataFrame(services),hide_index=True,width='stretch')
-                else:st.caption('В загруженных данных нет подробной расшифровки услуг. Здесь могут учитываться обработка, переупаковка, поставки и другие услуги; это примеры, а не подтверждённый состав расходов этого периода.')
+            from .overview_reports import expenses_html
+            st.html(expenses_html(db,start,end,result,tax_label))
+            st.caption('Нажмите «Реклама» или «Прочие услуги», чтобы раскрыть состав прямо в таблице. Плюс — поступление, минус — расход. Соинвест учитывает начисления и их отмены.')
         st.subheader('Результат по товарам')
-        products=frame[frame.sku!=''].groupby('sku').agg(name=('name','first'),amount=('amount','sum'),cost=('cost','sum'),tax=('tax','sum'),profit=('profit','sum')).reset_index()
-        products['advertising']=products['sku'].map(lambda sku:float(advertising['products'].get(sku,{}).get('advertising',0)))
-        products['drr']=products['sku'].map(lambda sku:float(advertising['products'][sku]['drr']) if sku in advertising['products'] and advertising['products'][sku]['drr'] is not None else None)
-        if result['missing'] or result['stale_api']:products['profit']=None
-        st.dataframe(products.rename(columns={'sku':'Артикул','name':'Изделие','amount':'Начисления, ₽','cost':'Себестоимость, ₽','tax':'Налог, ₽','profit':'Результат, ₽','advertising':'Реклама с привязкой, ₽','drr':'ДРР артикула, %'}),hide_index=True,width='stretch')
-        st.caption('Общие расходы магазина не распределяются между товарами и заказами.')
+        from .product_metrics import summarize
+        mode=st.selectbox('Общие расходы по товарам',['С распределением по выручке · оценка','Только прямая привязка'],key='article_allocation')
+        overview_products=summarize(result,allocate_shared=mode.startswith('С распределением'))
+        if overview_products['has_shared']:
+            st.caption('Оценка распределяет общую рекламу и остальные расходы магазина по доле реализации каждого артикула. Сумма итогов товаров совпадает с итогом магазина; это не точная рекламная атрибуция. В режиме прямой привязки неполная прибыль скрыта.')
+        names={r['sku']:r['name'] for r in db.execute('SELECT sku,name FROM products')}
+        lines=[]
+        for sku,p in overview_products['products'].items():
+            lines.append({'Артикул':sku,'Изделие':names.get(sku) or p['name'] or sku,
+                'Реализация, ₽':float(rub(p['revenue'])),'Себестоимость, ₽':float(rub(p['costs'])),'Налоги, ₽':float(rub(p['tax'])),
+                'Чистая прибыль по артикулу, ₽':float(rub(p['profit'])) if not p['blocked'] else None,
+                'Реклама, ₽':float(rub(p['advertising'])) if overview_products['allocated'] or overview_products['unassigned_advertising']==0 else None,'ДРР, %':float(p['drr']) if p['drr'] is not None else None,
+                'Расчёт':'Оценка' if p['approximate'] else 'Прямая привязка'})
+        if lines:
+            st.dataframe(pd.DataFrame(lines),hide_index=True,width='stretch')
+            selected_sku=st.selectbox('Посмотреть артикул',list(overview_products['products']),format_func=lambda sku:(names.get(sku) or sku)+' · '+sku,key='article_dashboard')
+            p=overview_products['products'][selected_sku]
+            if p['approximate']:st.caption('Показана оценка с учётом распределённых расходов. Общий итог магазина от выбора артикула не меняется.')
+            c1,c2,c3=st.columns(3)
+            c1.metric('Чистая прибыль по артикулу',cash(p['profit']) if not p['blocked'] else 'Недостаточно данных')
+            c2.metric('Реализация по артикулу',cash(p['revenue']))
+            c3.metric('ДРР артикула',f'{p["drr"]:.2f} %'.replace('.',',') if p['drr'] is not None else 'Нет привязки')
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric('Себестоимость артикула',cash(p['costs']))
+            c2.metric('Налоги по артикулу',cash(p['tax']))
+            c3.metric('Реклама по артикулу',cash(p['advertising']) if overview_products['allocated'] or overview_products['unassigned_advertising']==0 else 'Нет полной привязки')
+            c4.metric('Процент прибыли артикула',f'{p["margin"]:.1f} %'.replace('.',',') if p['margin'] is not None else '—')
+            st.caption('Чистая прибыль с одной проданной штуки: '+(cash(p['unit_profit']) if p['unit_profit'] is not None else 'не определена')+'. ДРР = реклама ÷ реализация покупателям × 100%.')
         with st.expander('Посмотреть заказы и операции'):
             order=st.text_input('Номер отправления',key='order_filter')
             selected=frame[frame.order_no==order.strip()] if order.strip() else frame
-            st.dataframe(selected.rename(columns={'day':'Дата','order_no':'Отправление','sku':'Артикул','name':'Изделие','kind':'Тип','amount':'Начисление','cost':'Стоимость','tax':'Налог','profit':'Результат','issue':'Примечание'}),hide_index=True,width='stretch')
+            st.dataframe(selected.rename(columns={'day':'Дата','order_no':'Отправление','sku':'Артикул','name':'Изделие','kind':'Тип','amount':'Начисление','cost':'Стоимость','tax':'Налог','profit':'Результат','issue':'Примечание','quantity':'Количество'}),hide_index=True,width='stretch')
 
 
 def products_page(db):
