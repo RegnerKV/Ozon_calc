@@ -1,5 +1,6 @@
 from datetime import timedelta
 import time
+from pathlib import Path
 import streamlit as st
 from ozon_profit.access import require_login,local_mode
 from ozon_profit.core import connect,get_setting,set_setting
@@ -9,17 +10,22 @@ from ozon_profit.seller_api import init_tables,ApiError
 from ozon_profit.ui_pages import overview,products_page,settings_page,ensure_profit,refresh,today
 from ozon_profit.api_ui import active_credentials
 
-st.set_page_config(page_title='Ozon Profit',page_icon='O',layout='wide')
+st.set_page_config(page_title='Ozon Profit',page_icon=str(Path(__file__).parent/'static'/'shop-logo.png'),layout='wide')
 require_login()
 st.markdown('''<style>
-.stApp{background:#f5f7fb;color:#17243a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.brand{font-size:2.15rem;font-weight:700;letter-spacing:-.055em;padding:12px 0 8px;color:#18325d}
+@font-face{font-family:Manrope;src:url('/app/static/fonts/Manrope.ttf') format('truetype');font-weight:200 800;font-display:swap}
+@font-face{font-family:Unbounded;src:url('/app/static/fonts/Unbounded.ttf') format('truetype');font-weight:200 900;font-display:swap}
+.stApp{background:#fff;color:#141414;font-family:Manrope,"Segoe UI",sans-serif}
+.brand{font-family:Unbounded,Manrope,sans-serif;font-size:1.48rem;font-weight:700;letter-spacing:-.055em;padding:4px 0 6px;color:#0956ff}
+.shop-name{font-family:Manrope,sans-serif;font-size:1.15rem;font-weight:700;color:#141414;margin-bottom:8px}
 [data-testid="stSidebar"] [role="radiogroup"]{gap:12px}
-[data-testid="stSidebar"] [role="radiogroup"]>label{border:1px solid #c7d8f4;border-radius:16px;background:#f6f9ff;padding:15px 18px!important;transition:background .15s;min-height:58px;width:100%}
+[data-testid="stSidebar"] [role="radiogroup"]>label{border:1px solid #0956ff;border-radius:12px;background:#fff;padding:13px 16px!important;transition:background .15s;min-height:54px;width:100%}
 [data-testid="stSidebar"] [role="radiogroup"]>label>div:first-child{position:absolute;opacity:0;width:1px;height:1px;overflow:hidden}
-[data-testid="stSidebar"] [role="radiogroup"]>label p{font-size:1.12rem;font-weight:600;color:#244981}
-[data-testid="stSidebar"] [role="radiogroup"]>label:has(input:checked){background:#e7efff;border-color:#6e9be4;box-shadow:0 3px 12px #194e9b0a}
-[data-testid="stSidebar"] [role="radiogroup"]>label:hover{background:#edf3ff}
+[data-testid="stSidebar"] [role="radiogroup"]>label p{font-family:Manrope,sans-serif;font-size:1.08rem;font-weight:700;color:#141414}
+[data-testid="stSidebar"] [role="radiogroup"]>label:has(input:checked){background:#dff568;border-color:#dff568;box-shadow:none}
+[data-testid="stSidebar"] [role="radiogroup"]>label:hover{background:#f3f6ff}
+[data-testid="stSidebar"] [role="radiogroup"]>label:has(input:checked):hover{background:#dff568}
+[data-testid="stSidebar"] [role="radiogroup"]>label:has(input:checked)::before{filter:grayscale(1) brightness(.25)}
 [data-testid="stSidebar"] [role="radiogroup"]>label:focus-within{outline:2px solid #6e9be4;outline-offset:3px}
 [data-testid="stSidebar"] [role="radiogroup"]>label::before{content:"";display:inline-block;width:20px;height:20px;flex-shrink:0;background-size:20px 20px;background-repeat:no-repeat;margin-right:12px}
 [data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(1)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%273%27%20y%3D%273%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%273%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3Crect%20x%3D%273%27%20y%3D%2714%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%2714%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3C%2Fsvg%3E");}
@@ -39,12 +45,15 @@ st.markdown('''<style>
 .ozon-expenses .child span:first-child{white-space:normal;overflow-wrap:anywhere}
 .ozon-expenses .child span:last-child{flex-shrink:0;font-variant-numeric:tabular-nums;white-space:nowrap}
 .block-container{max-width:1320px;padding-top:4rem;padding-bottom:3rem}
-h1,h2,h3{letter-spacing:-.035em;color:#182336}
+h1,h2,h3{font-family:Unbounded,Manrope,sans-serif!important;letter-spacing:-.045em;color:#141414;font-weight:600}
+h2{font-size:1.65rem!important}
+h3{font-size:1.25rem!important}
+button,input,textarea,select,[data-testid="stMetric"]{font-family:Manrope,sans-serif!important}
 [data-testid="stSidebar"]{background:#fff;border-right:1px solid #e8e7e3}
-[data-testid="stMetric"]{background:#fff;border:1px solid #ebe9e3;border-radius:18px;padding:20px 22px;box-shadow:0 4px 22px rgba(30,35,55,.025)}
-[data-testid="stMetricValue"]{font-variant-numeric:tabular-nums;font-size:1.85rem;letter-spacing:-.04em}
-[data-testid="stMetricLabel"]{color:#6a7283;font-size:.85rem}
-.stButton>button[kind="primary"]{background:#3779ed;border-color:#3779ed;border-radius:10px}
+[data-testid="stMetric"]{background:#fff;border:1px solid #ebe9e3;border-radius:12px;padding:18px 20px;box-shadow:none}
+[data-testid="stMetricValue"]{font-variant-numeric:tabular-nums;font-family:Manrope,sans-serif;font-weight:750;font-size:1.85rem;letter-spacing:-.045em;color:#141414}
+[data-testid="stMetricLabel"]{color:#242424;font-size:.9rem;font-weight:500}
+.stButton>button[kind="primary"]{background:#0956ff;border-color:#0956ff;border-radius:24px;color:#fff;font-weight:700}
 [data-testid="stExpander"]{background:rgba(255,255,255,.7);border-radius:14px;border-color:#e8e7e3}
 [data-testid="stAlert"]{border-radius:12px}
 </style>''',unsafe_allow_html=True)
@@ -53,7 +62,8 @@ except StorageError as exc:
     st.error(str(exc));st.info('Данные не сбрасывались. Проверьте настройки постоянного хранилища в Secrets Streamlit.');st.stop()
 db=connect();init_tables(db)
 st.sidebar.markdown('<div class="brand">Ozon Profit</div>',unsafe_allow_html=True)
-st.sidebar.caption('Ваш магазин в цифрах')
+st.sidebar.markdown('<div class="shop-name">ХОЧУ! Цацки</div>',unsafe_allow_html=True)
+st.sidebar.image(str(Path(__file__).parent/'static'/'shop-logo.png'),width=120)
 storage_status=st.sidebar.empty()
 page=st.sidebar.radio('Раздел',['Обзор','Товары','План продаж','Настройки'],label_visibility='collapsed')
 # Retain an already entered session key during the first migration to encrypted storage.
@@ -63,9 +73,10 @@ if st.session_state.get('_seller_pair') and not db.execute('SELECT 1 FROM secure
         try:save_api_credentials(db,*st.session_state['_seller_pair'])
         except StorageError:pass
 try:
-    from ozon_profit.catalog import apply_library
+    from ozon_profit.catalog import apply_library,confirm_existing_costs
     if get_setting(db,'fish_cost_policy',None) is None:set_setting(db,'fish_cost_policy','1')
     apply_library(db)
+    confirm_existing_costs(db)
     ensure_profit(db)
     if not st.session_state.get('_auto_attempted'):
         st.session_state['_auto_attempted']=True

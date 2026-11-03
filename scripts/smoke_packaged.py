@@ -81,16 +81,20 @@ def main():
             page.get_by_role('combobox',name=re.compile(r'Период$')).click()
             page.get_by_text('Свои даты',exact=True).click()
             expect(page.get_by_text('765,31 ₽',exact=True).first).to_be_visible()
+            expect(page.locator('.st-key-kpi_profit [data-testid="stMetric"]')).to_have_css('background-color','rgb(212, 232, 216)')
+            expect(page.get_by_test_id('stSidebar').get_by_text('ХОЧУ! Цацки',exact=True)).to_be_visible()
+            expect(page.get_by_test_id('stSidebar').locator('img').first).to_be_visible()
+            assert page.request.get(url+'/app/static/fonts/Unbounded.ttf').status==200
+            assert page.request.get(url+'/app/static/fonts/Manrope.ttf').status==200
+
             page.get_by_test_id('stSelectbox').filter(has_text='Динамика').locator('[data-baseweb="select"]').click()
             page.get_by_role('option',name='Реализация покупателям',exact=True).click()
             assert page.get_by_test_id('stException').count()==0
             expect(page.locator('table.ozon-expenses')).to_be_visible()
             page.locator('table.ozon-expenses summary').filter(has_text='Реклама').click()
             expect(page.locator('table.ozon-expenses .child').first).to_be_visible()
-            page.get_by_role('combobox',name=re.compile(r'Общие расходы по товарам$')).click()
-            page.get_by_role('option',name='Только прямая привязка',exact=True).click()
-            expect(page.get_by_text('Недостаточно данных',exact=True)).to_be_visible()
-            expect(page.get_by_text('765,31 ₽',exact=True).first).to_be_visible()
+            expect(page.get_by_text('Чистая прибыль по артикулу',exact=True)).to_be_visible()
+            assert page.get_by_role('combobox',name=re.compile(r'Общие расходы по товарам$')).count()==0
             sidebar=page.get_by_test_id('stSidebar')
             sidebar.get_by_text('Товары',exact=True).click()
             expect(page.get_by_role('heading',name='Товары и себестоимость')).to_be_visible()

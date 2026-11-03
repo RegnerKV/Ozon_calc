@@ -22,7 +22,7 @@ jobs:
           --collect-all streamlit --collect-all plotly --collect-all pandas
           --collect-all openpyxl --collect-all ozon_profit --collect-all truststore
           --copy-metadata streamlit --add-data "app.py;."
-          --add-data ".streamlit/config.toml;.streamlit" launcher.py
+          --add-data ".streamlit/config.toml;.streamlit" --add-data "static;static" launcher.py
       - run: python -m playwright install chromium --only-shell
       - name: Test packaged Windows app in a browser
         run: python scripts/smoke_packaged.py

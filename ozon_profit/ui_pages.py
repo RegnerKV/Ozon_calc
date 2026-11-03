@@ -105,6 +105,13 @@ def overview(db):
     if end<start:st.error('Проверьте даты');return
     from .dashboard import snapshot
     result,issues,raw_net=snapshot(db,start,end)
+    from .kpi import comparison_period,tone,metric
+    prior_start,prior_end=comparison_period(start,end)
+    prior,prior_issues,_=snapshot(db,prior_start,prior_end)
+    prior_known=bool(prior['count']) and not prior_issues and not prior['stale_api']
+    current_known=bool(result['count']) and not issues and not result['stale_api']
+    comparison_note=f'Сравнение с {prior_start:%d.%m.%Y} — {prior_end:%d.%m.%Y}'
+    st.caption(comparison_note+('' if prior_known else ' · нет полных данных для сравнения'))
     st.caption(f'{start:%d.%m.%Y} — {end:%d.%m.%Y} · Предварительный расчёт')
     if issues:
         st.warning('Начисления загружены, но прибыль за этот период пока нельзя рассчитать. Ниже указаны причины.')
@@ -123,10 +130,10 @@ def overview(db):
         missing=[{'Дата продажи':r['day'],'Артикул':r['sku'],'Товар':r['name'],'Причина':r['issue']} for r in result['details'] if r['issue'] and r['issue']!='Примерная себестоимость']
         st.dataframe(pd.DataFrame(missing).drop_duplicates(),hide_index=True,width='stretch')
     elif result['estimated']:st.info(f'В расчёте {result["estimated"]} продаж с примерной себестоимостью. Их можно уточнить в товарах.')
-    top=st.columns([2,1,1])
-    top[0].metric('Чистая прибыль · предварительно',_profit(result))
-    top[1].metric('Реализация покупателям',cash(result['revenue']) if not result['stale_api'] else 'Нужен пересчёт')
-    top[2].metric('Начислено Ozon',cash(result['net']))
+    top=st.columns(4)
+    metric(top[0],'profit','Чистая прибыль · предварительно',_profit(result),tone('profit',result['profit'] if current_known and not result['missing'] and not result['stale_api'] else None))
+    metric(top[1],'revenue','Реализация покупателям',cash(result['revenue']) if not result['stale_api'] else 'Нужен пересчёт',tone('revenue',result['revenue'] if current_known else None,prior['revenue'] if prior_known else None),help=comparison_note+(' · '+cash(prior['revenue']) if prior_known else ' · нет данных'))
+    metric(top[2],'net','Начислено Ozon',cash(result['net']),tone('net',result['net'] if current_known else None,prior['net'] if prior_known else None),help=comparison_note+(' · '+cash(prior['net']) if prior_known else ' · нет данных'))
     from .advertising import drr
     advertising=drr(result['details'])
     from .performance import report as performance_report
@@ -138,23 +145,24 @@ def overview(db):
             value['drr']=value['advertising']/value['revenue']*100 if value['revenue']>0 and perf['unassigned']==0 else None
         if perf['total']!=advertising['advertising']:
             st.warning('Реклама требует сверки источников: Performance — '+cash(perf['total'])+', явно выделенные расходы Seller — '+cash(advertising['advertising'])+'. Показанная прибыль пока рассчитана по Seller API.')
-        st.caption('Реклама и ДРР — статистика Performance API. Прибыль и налог рассчитываются по финансовым начислениям Seller API: статистика рекламы повторно из прибыли не вычитается. Расхождения источников требуют сверки.')
-    else:st.caption('Performance API ещё не загружен за весь выбранный период. Реклама ниже — только явно выделенные финансовые операции Seller API; ноль не подтверждает отсутствие рекламных расходов.')
+        st.caption('Реклама: Performance API. Прибыль: финансовые начисления Seller API; рекламные расходы повторно не вычитаются.')
+    else:st.caption('Реклама показана по начислениям Seller API. Для полной сверки подключите Performance в настройках.')
     if get_setting(db,'performance_error'):st.warning('Не удалось обновить рекламу: '+get_setting(db,'performance_error'))
     known_ads=perf is not None or advertising['advertising']!=0
     if not known_ads:
         for value in advertising['products'].values():value['drr']=None
-    st.metric('ДРР магазина за период',(f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации') if known_ads else 'Нет данных рекламы')
-    if advertising['unassigned']>0:st.caption('Реклама без привязки к артикулу: '+cash(advertising['unassigned'])+'. Она включена в ДРР магазина; полный ДРР отдельных товаров не определён. Ниже доступна отдельно отмеченная оценка по товарам с распределением общих расходов.')
+    if advertising['unassigned']>0:st.caption('Общая реклама '+cash(advertising['unassigned'])+' распределена по товарам пропорционально реализации.')
     frame=details_frame(result['details'])
     ads=sum(((-money(r['amount'])) for r in result['details'] if r['kind'] in ('Реклама','Возврат расходов на рекламу')),money(0))
     row=st.columns(4)
-    row[0].metric('Себестоимость',cash(result['costs']))
+    metric(row[3],'drr','ДРР магазина за период',(f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации') if known_ads else 'Нет данных рекламы',tone('drr',advertising['store'] if known_ads else None))
+    metric(row[0],'costs','Себестоимость',cash(result['costs']))
     tax_label='Налоги ('+format(money(get_setting(db,'tax_rate','4')).normalize(),'f')+'%)'
-    row[1].metric(tax_label,cash(result['tax']) if not result['stale_api'] else 'Нужен пересчёт')
-    row[2].metric('Реклама',cash(perf['total'] if perf else ads) if known_ads else 'Нет данных рекламы')
-    margin=f'{result["profit"]/result["revenue"]*100:.1f} %'.replace('.',',') if result['revenue']>0 and not result['missing'] and not result['stale_api'] else '—'
-    row[3].metric('Процент чистой прибыли',margin)
+    metric(row[1],'tax',tax_label,cash(result['tax']) if not result['stale_api'] else 'Нужен пересчёт')
+    metric(row[2],'ads','Реклама',cash(perf['total'] if perf else ads) if known_ads else 'Нет данных рекламы')
+    margin_value=result['profit']/result['revenue']*100 if result['revenue']>0 and not result['missing'] and not result['stale_api'] else None
+    margin=f'{margin_value:.2f} %'.replace('.',',') if margin_value is not None else '—'
+    metric(top[3],'margin','Процент чистой прибыли',margin,tone('margin',margin_value))
     st.caption('Процент чистой прибыли = чистая прибыль ÷ реализация покупателям × 100%.')
     minis=st.columns(3)
     for col,label,first in zip(minis,['Сегодня','За 7 дней','Этот месяц'],[today(),today()-timedelta(days=6),today().replace(day=1)]):
@@ -183,32 +191,34 @@ def overview(db):
             st.caption('Нажмите «Реклама» или «Прочие услуги», чтобы раскрыть состав прямо в таблице. Плюс — поступление, минус — расход. Соинвест учитывает начисления и их отмены.')
         st.subheader('Результат по товарам')
         from .product_metrics import summarize
-        mode=st.selectbox('Общие расходы по товарам',['С распределением по выручке · оценка','Только прямая привязка'],key='article_allocation')
-        overview_products=summarize(result,allocate_shared=mode.startswith('С распределением'))
+        overview_products=summarize(result,allocate_shared=True)
         if overview_products['has_shared']:
-            st.caption('Оценка распределяет общую рекламу и остальные расходы магазина по доле реализации каждого артикула. Сумма итогов товаров совпадает с итогом магазина; это не точная рекламная атрибуция. В режиме прямой привязки неполная прибыль скрыта.')
+            st.caption('Общие расходы распределены пропорционально реализации товаров. Сумма товарной прибыли совпадает с итогом магазина; распределение не является прямой рекламной атрибуцией.')
         names={r['sku']:r['name'] for r in db.execute('SELECT sku,name FROM products')}
         lines=[]
         for sku,p in overview_products['products'].items():
             lines.append({'Артикул':sku,'Изделие':names.get(sku) or p['name'] or sku,
                 'Реализация, ₽':float(rub(p['revenue'])),'Себестоимость, ₽':float(rub(p['costs'])),'Налоги, ₽':float(rub(p['tax'])),
                 'Чистая прибыль по артикулу, ₽':float(rub(p['profit'])) if not p['blocked'] else None,
-                'Реклама, ₽':float(rub(p['advertising'])) if overview_products['allocated'] or overview_products['unassigned_advertising']==0 else None,'ДРР, %':float(p['drr']) if p['drr'] is not None else None,
-                'Расчёт':'Оценка' if p['approximate'] else 'Прямая привязка'})
+                'Реклама, ₽':float(rub(p['advertising'])) if overview_products['allocated'] or overview_products['unassigned_advertising']==0 else None,'ДРР, %':float(p['drr']) if p['drr'] is not None else None})
         if lines:
             st.dataframe(pd.DataFrame(lines),hide_index=True,width='stretch')
             selected_sku=st.selectbox('Посмотреть артикул',list(overview_products['products']),format_func=lambda sku:(names.get(sku) or sku)+' · '+sku,key='article_dashboard')
             p=overview_products['products'][selected_sku]
-            if p['approximate']:st.caption('Показана оценка с учётом распределённых расходов. Общий итог магазина от выбора артикула не меняется.')
+            prior_products=summarize(prior,allocate_shared=True)['products'] if prior_known else {}
+            prior_product=prior_products.get(selected_sku)
+            prior_revenue=prior_product['revenue'] if prior_product else money(0) if prior_known else None
+            product_ads_known=known_ads and (perf is None or perf['total']==advertising['advertising'])
+            st.caption('Включены общие расходы, распределённые по выручке. Выбор артикула не меняет общий итог магазина.')
             c1,c2,c3=st.columns(3)
-            c1.metric('Чистая прибыль по артикулу',cash(p['profit']) if not p['blocked'] else 'Недостаточно данных')
-            c2.metric('Реализация по артикулу',cash(p['revenue']))
-            c3.metric('ДРР артикула',f'{p["drr"]:.2f} %'.replace('.',',') if p['drr'] is not None else 'Нет привязки')
+            metric(c1,'article_profit','Чистая прибыль по артикулу',cash(p['profit']) if not p['blocked'] else 'Недостаточно данных',tone('profit',p['profit'] if not p['blocked'] else None))
+            metric(c2,'article_revenue','Реализация по артикулу',cash(p['revenue']),tone('revenue',p['revenue'],prior_revenue),help=comparison_note+(' · '+cash(prior_revenue) if prior_revenue is not None else ' · нет данных'))
+            metric(c3,'article_drr','ДРР артикула',f'{p["drr"]:.2f} %'.replace('.',',') if p['drr'] is not None and product_ads_known else 'Нет данных рекламы',tone('drr',p['drr'] if product_ads_known else None))
             c1,c2,c3,c4=st.columns(4)
-            c1.metric('Себестоимость артикула',cash(p['costs']))
-            c2.metric('Налоги по артикулу',cash(p['tax']))
-            c3.metric('Реклама по артикулу',cash(p['advertising']) if overview_products['allocated'] or overview_products['unassigned_advertising']==0 else 'Нет полной привязки')
-            c4.metric('Процент прибыли артикула',f'{p["margin"]:.1f} %'.replace('.',',') if p['margin'] is not None else '—')
+            metric(c1,'article_costs','Себестоимость артикула',cash(p['costs']))
+            metric(c2,'article_tax','Налоги по артикулу',cash(p['tax']))
+            metric(c3,'article_ads','Реклама по артикулу',cash(p['advertising']) if product_ads_known else 'Нет данных рекламы')
+            metric(c4,'article_margin','Процент прибыли артикула',f'{p["margin"]:.2f} %'.replace('.',',') if p['margin'] is not None else '—',tone('margin',p['margin']))
             st.caption('Чистая прибыль с одной проданной штуки: '+(cash(p['unit_profit']) if p['unit_profit'] is not None else 'не определена')+'. ДРР = реклама ÷ реализация покупателям × 100%.')
         with st.expander('Посмотреть заказы и операции'):
             order=st.text_input('Номер отправления',key='order_filter')
@@ -235,13 +245,13 @@ def products_page(db):
     rows=[]
     for p in db.execute('SELECT * FROM products ORDER BY name'):
         c=db.execute('SELECT * FROM costs WHERE sku=? AND since<=? ORDER BY since DESC LIMIT 1',(p['sku'],str(today()))).fetchone()
-        rows.append({'sku':p['sku'],'name':p['name'],'amount':c['amount'] if c else '', 'estimated':bool(c['estimated']) if c else True,'note':c['note'] if c else ''})
+        rows.append({'sku':p['sku'],'name':p['name'],'amount':c['amount'] if c else '', 'note':c['note'] if c else ''})
     if rows:
         when=st.date_input('Новые значения действуют с',today(),key='edit_cost_since',format='DD.MM.YYYY')
         st.caption('Изменение сохраняется с выбранной даты; прежняя стоимость остаётся в истории.')
         edited=st.data_editor(pd.DataFrame(rows),hide_index=True,width='stretch',disabled=['sku'],key='product_editor',column_config={
             'sku':st.column_config.TextColumn('Артикул'),'name':st.column_config.TextColumn('Изделие'),
-            'amount':st.column_config.TextColumn('С упаковкой, ₽'),'estimated':st.column_config.CheckboxColumn('Оценка'),
+            'amount':st.column_config.TextColumn('С упаковкой, ₽'),
             'note':st.column_config.TextColumn('Примечание')})
         if st.button('Сохранить изменения',type='primary'):
             try:
@@ -255,19 +265,19 @@ def products_page(db):
                 with db:
                     for new,value in changes:
                         db.execute('UPDATE products SET name=? WHERE sku=?',(new['name'],new['sku']))
-                        db.execute('INSERT OR REPLACE INTO costs VALUES(?,?,?,?,?)',(new['sku'],str(when),str(value),int(new['estimated']),new['note']))
+                        db.execute('INSERT OR REPLACE INTO costs VALUES(?,?,?,?,?)',(new['sku'],str(when),str(value),0,new['note']))
                 ensure_profit(db);st.success('Изменения сохранены')
             except ValueError as exc:st.error(str(exc))
     with st.expander('Добавить товар вручную'):
         with st.form('cost'):
             sku=st.text_input('Артикул Ozon');name=st.text_input('Название изделия')
-            amount=st.text_input('Стоимость с упаковкой, ₽','0');estimated=st.checkbox('Примерная себестоимость')
+            amount=st.text_input('Стоимость с упаковкой, ₽','0')
             effective=st.date_input('Действует с',today(),key='manual_cost_since',format='DD.MM.YYYY');note=st.text_input('Примечание')
             if st.form_submit_button('Сохранить'):
-                try:save_cost(db,sku,name,effective,amount,estimated,note);ensure_profit(db);st.success('Товар сохранён')
+                try:save_cost(db,sku,name,effective,amount,False,note);ensure_profit(db);st.success('Товар сохранён')
                 except ValueError as exc:st.error(str(exc))
     with st.expander('История изменений стоимости'):
-        st.dataframe(pd.read_sql_query('SELECT p.name AS Изделие,c.sku AS Артикул,c.since AS "С даты",c.amount AS Стоимость,c.estimated AS Оценка FROM costs c JOIN products p USING(sku) ORDER BY c.since DESC',db),hide_index=True,width='stretch')
+        st.dataframe(pd.read_sql_query('SELECT p.name AS Изделие,c.sku AS Артикул,c.since AS "С даты",c.amount AS Стоимость FROM costs c JOIN products p USING(sku) ORDER BY c.since DESC',db),hide_index=True,width='stretch')
 
 
 def settings_page(db,manager):

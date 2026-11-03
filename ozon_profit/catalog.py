@@ -71,3 +71,13 @@ def apply_fish_policy(db):
                 continue
             for since,amount in sorted(rates.items()):
                 db.execute('INSERT OR REPLACE INTO costs VALUES(?,?,?,?,?)',(sku,since,str(money(amount)),0,FISH_POLICY+'; с упаковкой'))
+
+
+
+def confirm_existing_costs(db):
+    """Owner confirmed all currently entered costs; preserve amounts and dates."""
+    from .core import get_setting
+    if get_setting(db,'costs_confirmed_v1')=='1':return
+    with db:
+        db.execute('UPDATE costs SET estimated=0 WHERE estimated<>0')
+        db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',('costs_confirmed_v1','1'))

@@ -4,6 +4,7 @@ gatherUsageStats = false
 [server]
 headless = true
 maxUploadSize = 25
+enableStaticServing = true
 
 [client]
 toolbarMode = "minimal"
@@ -11,8 +12,8 @@ showErrorDetails = false
 
 [theme]
 base = "light"
-primaryColor = "#5369d8"
-backgroundColor = "#f8f7f4"
-secondaryBackgroundColor = "#f0f0f5"
-textColor = "#182336"
+primaryColor = "#0956ff"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f4f4"
+textColor = "#141414"
 font = "sans serif"

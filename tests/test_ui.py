@@ -16,13 +16,12 @@ def test_add_cost_through_ui(tmp_path,monkeypatch):
     app.text_input[0].set_value('MALINA')
     app.text_input[1].set_value('Малина')
     app.text_input[2].set_value('123,005')
-    app.checkbox[0].check()
     next(b for b in app.button if b.label == 'Сохранить').click().run()
     assert not app.exception
     from ozon_profit.core import connect
     db=connect(tmp_path/'profit.db')
     record=db.execute('SELECT * FROM costs').fetchone()
-    assert record['amount']=='123.005' and record['estimated']==1
+    assert record['amount']=='123.005' and record['estimated']==0
 
 
 def test_dashboard_with_imported_data(tmp_path,monkeypatch):
@@ -75,3 +74,20 @@ def test_overview_periods_current_month_and_previous_month(tmp_path,monkeypatch)
     assert any(m.label=='Процент чистой прибыли' for m in app.metric)
     app.selectbox(key='overview_period').set_value('За последние 30 дней').run()
     assert any('05.10.2026 — 03.11.2026' in c.value for c in app.caption)
+
+
+def test_final_preview_hides_estimated_costs_and_allocation_picker(tmp_path,monkeypatch):
+    from ozon_profit.core import connect,save_cost,import_operations
+    monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
+    db=connect(tmp_path/'profit.db');save_cost(db,'demo','Демо','2026-01-01','10',True)
+    import_operations(db,b'preview-fixture','fictional.xlsx',[dict(id='s',day='2026-10-01',kind='sale',sku='demo',qty=1,amount=100)])
+    db.close()
+    app=AppTest.from_file('app.py').run()
+    app.selectbox(key='overview_period').set_value('Свои даты').run()
+    assert not app.exception
+    assert not any(s.key=='article_allocation' for s in app.selectbox)
+    app.sidebar.radio[0].set_value('Товары').run()
+    assert not app.exception
+    assert not any(c.label=='Примерная себестоимость' for c in app.checkbox)
+    for frame in app.dataframe:
+        assert 'Оценка' not in frame.value.columns and 'estimated' not in frame.value.columns
