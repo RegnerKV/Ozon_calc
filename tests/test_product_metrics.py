@@ -44,6 +44,21 @@ def test_article_dashboard_switch_does_not_filter_store_totals(tmp_path,monkeypa
     main=lambda:next(m.value for m in app.metric if m.label=='Чистая прибыль · предварительно')
     article=lambda:next(m.value for m in app.metric if m.label=='Чистая прибыль по артикулу')
     assert main()=='900,00 ₽' and article()=='700,00 ₽'
+    assert next(m.value for m in app.metric if m.label=='Продано за период')=='20 шт.'
+    assert next(m.value for m in app.metric if m.label=='Продано по артикулу')=='10 шт.'
+    assert 'Продано, шт.' in app.dataframe[0].value.columns
     app.selectbox(key='article_dashboard').set_value('b').run()
     assert not app.exception
     assert main()=='900,00 ₽' and article()=='200,00 ₽'
+
+
+def test_sold_and_refunded_quantities_exclude_fee_and_stock_movements():
+    db,result=sample()
+    import_operations(db,b'returns-units','fictional.xlsx',[
+        dict(id='return',day='2026-10-02',kind='return',sku='a',qty=2,amount=-200,order_no='demo'),
+        dict(id='stock',day='2026-10-03',kind='restock',sku='a',qty=1,amount=0,order_no='demo')])
+    result=calculate(db,'2026-10-01','2026-10-31')
+    assert result['sold_units']==20 and result['returned_units']==2 and result['net_units']==18
+    a=summarize(result)['products']['a']
+    assert a['sold_quantity']==10 and a['returned_quantity']==2 and a['quantity']==8
+    db.close()

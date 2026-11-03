@@ -116,3 +116,59 @@ def test_net_tax_uses_new_ad_budget_and_order_charge_once(db):
                '2026-08-01','2026-08-31',ad_budget=500,order_ad_percent=6)
     assert r['totals']['tax']==118
     assert r['totals']['profit']==1832
+
+
+def test_commission_scales_with_price_but_logistics_and_services_with_units(db):
+    import_operations(db,b'unit-fees','fictional.xlsx',[
+        dict(id='log',day='2026-08-01',kind='logistics',amount=-100,qty=0,sku='demo'),
+        dict(id='svc',day='2026-08-01',kind='service',amount=-30,qty=0,sku='demo')])
+    r=forecast(db,[{'sku':'demo','quantity':5,'price':200}], '2026-12-01','2026-12-31',
+               '2026-08-01','2026-08-31',ad_budget=50,order_ad_percent=0)
+    t=r['totals'];row=r['rows'][0]
+    assert t['revenue']==1000 and t['commission']==200
+    assert t['logistics']==50 and t['services']==40
+    assert row['commission_percent']==20 and row['logistics_per_unit']==10 and row['services_per_unit']==8
+    assert t['costs']==100 and t['advertising']==50 and t['tax']==40 and t['profit']==520
+    assert t['profit']==t['revenue']+t['points']+t['partner']-t['commission']-t['logistics']-t['services']-t['costs']-t['advertising']-t['tax']-t['extra_costs']
+
+
+def test_new_article_uses_store_unit_costs_and_all_plan_costs_sum_to_total(db):
+    import_operations(db,b'unit-log','fictional.xlsx',[dict(id='log',day='2026-08-01',kind='logistics',amount=-100,qty=0,sku='demo')])
+    r=forecast(db,[{'sku':'demo','quantity':5,'price':200},{'sku':'new','quantity':3,'price':150}],
+               '2026-12-01','2026-12-31','2026-08-01','2026-08-31',ad_budget=123,order_ad_percent=6,extra_costs=37)
+    assert not r['issues']
+    assert r['rows'][1]['logistics_per_unit']==10 and r['rows'][1]['services_per_unit']==5
+    assert r['rows'][1]['commission_percent']==20
+    for field in ['tax','commission','logistics','services','advertising','extra_costs','profit']:
+        assert abs(sum(row[field] for row in r['rows'])-r['totals'][field])<D('0.00000000001')
+
+
+def test_coinvest_is_visible_and_optional_without_changing_fees(db):
+    import_operations(db,b'loyalty','fictional.xlsx',[dict(id='points',day='2026-08-01',kind='points',amount=300,qty=0,sku='demo')])
+    set_setting(db,'tax_base','sales_points')
+    kwargs=dict(db=db,items=[{'sku':'demo','quantity':10}],start='2026-12-01',end='2026-12-31',baseline_start='2026-08-01',baseline_end='2026-08-31',ad_budget=100)
+    yes=forecast(**kwargs);no=forecast(**kwargs,include_coinvest=False)
+    assert yes['totals']['points']==300 and no['totals']['points']==0
+    assert yes['totals']['commission']==no['totals']['commission']==200
+    assert yes['totals']['tax']==52 and no['totals']['tax']==40
+    assert yes['profit_without_coinvest']==no['totals']['profit']
+
+
+def test_historic_ad_share_explains_optimistic_fixed_budget_scenario(db):
+    r=forecast(db,[{'sku':'demo','quantity':100}], '2026-12-01','2026-12-31',
+               '2026-08-01','2026-08-31',ad_budget=100,order_ad_percent=0)
+    assert r['planned_ad_share']==1 and r['base_ad_share']==10
+    assert r['totals']['profit']-r['totals']['baseline_profit']==900
+
+
+def test_refunded_fees_reduce_their_category_without_becoming_extra_income_twice(db):
+    import_operations(db,b'refunded-fees','fictional.xlsx',[
+        dict(id='api-ledger:fictional:0:commission',day='2026-08-01',kind='service_refund',amount=20,qty=0,sku='demo'),
+        dict(id='log',day='2026-08-01',kind='logistics',amount=-100,qty=0,sku='demo'),
+        dict(id='log-refund',day='2026-08-01',kind='logistics_refund',amount=20,qty=0,sku='demo'),
+        dict(id='svc',day='2026-08-01',kind='service',amount=-30,qty=0,sku='demo'),
+        dict(id='svc-refund',day='2026-08-01',kind='service_refund',amount=10,qty=0,sku='demo')])
+    r=forecast(db,[{'sku':'demo','quantity':10}], '2026-12-01','2026-12-31',
+               '2026-08-01','2026-08-31',ad_budget=100)
+    assert r['totals']['commission']==180 and r['totals']['logistics']==80
+    assert r['totals']['services']==70 and r['totals']['profit']==330

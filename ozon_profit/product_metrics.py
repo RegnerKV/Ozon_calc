@@ -6,7 +6,7 @@ FIELDS=('net','revenue','costs','tax','profit','advertising')
 
 
 def summarize(result,allocate_shared=True):
-    def empty():return dict(**{k:ZERO for k in FIELDS},quantity=ZERO,name='',missing=False,estimated=False,allocated=ZERO)
+    def empty():return dict(**{k:ZERO for k in FIELDS},quantity=ZERO,sold_quantity=ZERO,returned_quantity=ZERO,name='',missing=False,estimated=False,allocated=ZERO)
     products=defaultdict(empty);shared=empty()
     for row in result['details']:
         sku=row['sku'];p=products[sku] if sku else shared
@@ -14,6 +14,7 @@ def summarize(result,allocate_shared=True):
         amount=money(row['amount']);cost=money(row['cost']);tax=money(row['tax'])
         p['net']+=amount;p['costs']+=cost;p['tax']+=tax;p['profit']+=amount-cost-tax
         if row['kind'] in (KINDS['sale'],KINDS['return']):
+            p['sold_quantity' if row['kind']==KINDS['sale'] else 'returned_quantity']+=money(row.get('quantity',0))
             p['revenue']+=amount;p['quantity']+=money(row.get('quantity',0))*(1 if row['kind']==KINDS['sale'] else -1)
         if row['kind'] in (KINDS['advertising'],KINDS['advertising_refund']):p['advertising']-=amount
         issue=row.get('issue','')

@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from .core import connect,calculate,money,rub,get_setting,set_setting,save_cost,withdrawal,KINDS
-from .presentation import cash,details_frame
+from .presentation import cash,details_frame,units
 from .api_ui import active_credentials,run_update
 from .runtime import secret,save_api_credentials
 from .secure_store import StorageError
@@ -164,6 +164,11 @@ def overview(db):
     margin=f'{margin_value:.2f} %'.replace('.',',') if margin_value is not None else '—'
     metric(top[3],'margin','Процент чистой прибыли',margin,tone('margin',margin_value))
     st.caption('Процент чистой прибыли = чистая прибыль ÷ реализация покупателям × 100%.')
+    quantity_known=current_known and not result['net_mode']
+    a,b,c=st.columns(3)
+    metric(a,'sold_units','Продано за период',units(result['sold_units']) if quantity_known else 'Нет данных')
+    metric(b,'returned_units','Возвраты за период',units(result['returned_units']) if quantity_known else 'Нет данных')
+    metric(c,'net_units','Итог после возвратов',units(result['net_units']) if quantity_known else 'Нет данных',help='Проданные штуки минус возвращённые за выбранные даты. Возвраты старых продаж могут дать отрицательный итог.')
     minis=st.columns(3)
     for col,label,first in zip(minis,['Сегодня','За 7 дней','Этот месяц'],[today(),today()-timedelta(days=6),today().replace(day=1)]):
         mini,mini_issues,_=snapshot(db,first,today())
@@ -197,12 +202,12 @@ def overview(db):
         names={r['sku']:r['name'] for r in db.execute('SELECT sku,name FROM products')}
         lines=[]
         for sku,p in overview_products['products'].items():
-            lines.append({'Артикул':sku,'Изделие':names.get(sku) or p['name'] or sku,
+            lines.append({'Артикул':sku,'Изделие':names.get(sku) or p['name'] or sku,'Продано, шт.':float(p['sold_quantity']),'Возвраты, шт.':float(p['returned_quantity']),'Итог, шт.':float(p['quantity']),
                 'Реализация, ₽':float(rub(p['revenue'])),'Себестоимость, ₽':float(rub(p['costs'])),'Налоги, ₽':float(rub(p['tax'])),
                 'Чистая прибыль по артикулу, ₽':float(rub(p['profit'])) if not p['blocked'] else None,
                 'Реклама, ₽':float(rub(p['advertising'])) if overview_products['allocated'] or overview_products['unassigned_advertising']==0 else None,'ДРР, %':float(p['drr']) if p['drr'] is not None else None})
         if lines:
-            st.dataframe(pd.DataFrame(lines),hide_index=True,width='stretch')
+            st.dataframe(pd.DataFrame(lines),hide_index=True,width='stretch',column_config={name:st.column_config.NumberColumn(format='%d') for name in ('Продано, шт.','Возвраты, шт.','Итог, шт.')})
             selected_sku=st.selectbox('Посмотреть артикул',list(overview_products['products']),format_func=lambda sku:(names.get(sku) or sku)+' · '+sku,key='article_dashboard')
             p=overview_products['products'][selected_sku]
             prior_products=summarize(prior,allocate_shared=True)['products'] if prior_known else {}
@@ -210,6 +215,10 @@ def overview(db):
             prior_revenue=prior_product['revenue'] if prior_product else money(0) if prior_known else None
             product_ads_known=known_ads and (perf is None or perf['total']==advertising['advertising'])
             st.caption('Включены общие расходы, распределённые по выручке. Выбор артикула не меняет общий итог магазина.')
+            a,b,c=st.columns(3)
+            metric(a,'article_sold','Продано по артикулу',units(p['sold_quantity']))
+            metric(b,'article_returned','Возвраты по артикулу',units(p['returned_quantity']))
+            metric(c,'article_units','Итог по артикулу',units(p['quantity']))
             c1,c2,c3=st.columns(3)
             metric(c1,'article_profit','Чистая прибыль по артикулу',cash(p['profit']) if not p['blocked'] else 'Недостаточно данных',tone('profit',p['profit'] if not p['blocked'] else None))
             metric(c2,'article_revenue','Реализация по артикулу',cash(p['revenue']),tone('revenue',p['revenue'],prior_revenue),help=comparison_note+(' · '+cash(prior_revenue) if prior_revenue is not None else ' · нет данных'))
@@ -219,7 +228,7 @@ def overview(db):
             metric(c2,'article_tax','Налоги по артикулу',cash(p['tax']))
             metric(c3,'article_ads','Реклама по артикулу',cash(p['advertising']) if product_ads_known else 'Нет данных рекламы')
             metric(c4,'article_margin','Процент прибыли артикула',f'{p["margin"]:.2f} %'.replace('.',',') if p['margin'] is not None else '—',tone('margin',p['margin']))
-            st.caption('Чистая прибыль с одной проданной штуки: '+(cash(p['unit_profit']) if p['unit_profit'] is not None else 'не определена')+'. ДРР = реклама ÷ реализация покупателям × 100%.')
+            st.caption('Чистая прибыль на штуку после возвратов: '+(cash(p['unit_profit']) if p['unit_profit'] is not None else 'не определена')+'. ДРР = реклама ÷ реализация покупателям × 100%.')
         with st.expander('Посмотреть заказы и операции'):
             order=st.text_input('Номер отправления',key='order_filter')
             selected=frame[frame.order_no==order.strip()] if order.strip() else frame

@@ -11,3 +11,10 @@ def details_frame(details):
     if not frame.empty:
         for key in ('amount','cost','tax','profit'):frame[key]=frame[key].map(lambda v:float(rub(v)))
     return frame
+
+
+
+def units(value):
+    from .core import money
+    value=money(value)
+    return (f'{int(value):,}'.replace(',',' ') if value==value.to_integral_value() else format(value.normalize(),'f').replace('.',','))+' шт.'

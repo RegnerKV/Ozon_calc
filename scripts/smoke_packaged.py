@@ -94,6 +94,8 @@ def main():
             page.locator('table.ozon-expenses summary').filter(has_text='Реклама').click()
             expect(page.locator('table.ozon-expenses .child').first).to_be_visible()
             expect(page.get_by_text('Чистая прибыль по артикулу',exact=True)).to_be_visible()
+            expect(page.locator('.st-key-kpi_sold_units [data-testid="stMetricValue"]')).to_have_text('2 шт.')
+            expect(page.locator('.st-key-kpi_article_sold [data-testid="stMetricValue"]')).to_have_text('2 шт.')
             assert page.get_by_role('combobox',name=re.compile(r'Общие расходы по товарам$')).count()==0
             sidebar=page.get_by_test_id('stSidebar')
             sidebar.get_by_text('Товары',exact=True).click()
@@ -105,6 +107,7 @@ def main():
             page.get_by_label('Бюджет рекламы с оплатой за клик на весь период, ₽',exact=True).press('Enter')
             expect(page.get_by_text('18 382,75 ₽',exact=True)).to_be_visible()
             expect(page.get_by_text('Продвижение за заказы',exact=True)).to_be_visible()
+            expect(page.get_by_role('heading',name='Полный расчёт прибыли',exact=True)).to_be_visible()
             sidebar.get_by_text('Настройки',exact=True).click()
             expect(page.get_by_text('Подключён · ключ сохранён и подхватывается автоматически',exact=True)).to_be_visible()
             page.screenshot(path=str(ROOT/'windows-smoke.png'),full_page=True)

@@ -151,10 +151,12 @@ def calculate(db, start, end):
     rows = db.execute('SELECT * FROM operations WHERE day BETWEEN ? AND ? ORDER BY day,id', (str(start), str(end))).fetchall()
     rate = money(get_setting(db, 'tax_rate', '4')) / 100
     tax_base_mode = get_setting(db, 'tax_base', 'sales_points')
-    totals = dict(net=ZERO, revenue=ZERO, costs=ZERO, tax=ZERO, profit=ZERO, expenses=ZERO, estimated=0, missing=0, count=len(rows))
+    totals = dict(net=ZERO, revenue=ZERO, costs=ZERO, tax=ZERO, profit=ZERO, expenses=ZERO, estimated=0, missing=0, count=len(rows),sold_units=ZERO,returned_units=ZERO,net_units=ZERO)
     details = []
     for row in rows:
         amount, qty = money(row['amount']), money(row['qty'])
+        if row['kind']=='sale':totals['sold_units']+=qty
+        elif row['kind']=='return':totals['returned_units']+=qty
         cost, issue = ZERO, ''
         if row['kind'] in ('sale', 'restock'):
             if row['kind'] == 'restock':
@@ -218,6 +220,7 @@ def calculate(db, start, end):
     totals['tax'] = max(ZERO, raw_tax)
     totals['tax_adjustment'] = totals['tax'] - raw_tax
     totals['profit'] = totals['net'] - totals['costs'] - totals['tax']
+    totals['net_units'] = totals['sold_units'] - totals['returned_units']
     totals['net_mode'] = get_setting(db, 'ledger_mode') == 'net'
     totals['stale_api'] = bool(db.execute("SELECT 1 FROM operations o JOIN imports i ON i.digest=o.source WHERE o.day BETWEEN ? AND ? AND o.id LIKE 'api-ledger:%' AND i.name='Ozon Seller API' LIMIT 1",(str(start),str(end))).fetchone())
     totals['incomplete'] = bool(totals['missing'] or totals['estimated'] or totals['net_mode'] or totals['stale_api'])
