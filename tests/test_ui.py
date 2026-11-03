@@ -37,6 +37,7 @@ def test_dashboard_with_imported_data(tmp_path,monkeypatch):
     ])
     db.close()
     app=AppTest.from_file('app.py').run()
+    app.selectbox(key='overview_period').set_value('Свои даты').run()
     assert not app.exception
     assert any(metric.value=='563,99 ₽' for metric in app.metric)
     app.text_input(key='order_filter').set_value('001').run()
@@ -56,3 +57,21 @@ def test_api_key_stays_in_session_and_input_is_cleared(tmp_path,monkeypatch):
     assert not list(tmp_path.glob('*.credentials'))
     next(b for b in app.button if b.label=='Забыть ключ на этом компьютере').click().run()
     assert app.session_state['_seller_pair'] is None
+
+
+def test_overview_periods_current_month_and_previous_month(tmp_path,monkeypatch):
+    from datetime import date
+    from ozon_profit import ui_pages
+    monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
+    monkeypatch.setattr(ui_pages,'today',lambda:date(2026,11,3))
+    app=AppTest.from_file('app.py').run()
+    select=app.selectbox(key='overview_period')
+    assert select.options==['Текущий месяц','Прошлый месяц','За 7 дней','За последние 30 дней','Свои даты']
+    assert any('01.11.2026 — 03.11.2026' in c.value for c in app.caption)
+    select.set_value('Прошлый месяц').run()
+    assert any('01.10.2026 — 31.10.2026' in c.value for c in app.caption)
+    assert not any(h.value=='Личные деньги' for h in app.subheader)
+    assert any(m.label=='Налоги (4%)' for m in app.metric)
+    assert any(m.label=='Процент чистой прибыли' for m in app.metric)
+    app.selectbox(key='overview_period').set_value('За последние 30 дней').run()
+    assert any('05.10.2026 — 03.11.2026' in c.value for c in app.caption)

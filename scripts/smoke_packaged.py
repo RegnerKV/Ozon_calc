@@ -78,6 +78,8 @@ def main():
             page=browser.new_page(viewport={'width':1440,'height':1100})
             page.goto(url)
             expect(page.get_by_role('heading',name='Ваша прибыль — на одном экране')).to_be_visible(timeout=90000)
+            page.get_by_label('Период',exact=True).click()
+            page.get_by_text('Свои даты',exact=True).click()
             expect(page.get_by_text('765,31 ₽',exact=True)).to_be_visible()
             sidebar=page.get_by_test_id('stSidebar')
             sidebar.get_by_text('Товары',exact=True).click()

@@ -244,6 +244,7 @@ def test_promote_through_app_and_show_result(db,tmp_path,monkeypatch):
     assert calculate(saved,START,END)['profit']==D('214.990')
     saved.close()
     app=AppTest.from_file('app.py').run()
+    app.selectbox(key='overview_period').set_value('Свои даты').run()
     assert not app.exception
     assert any(metric.value=='214,99 ₽' for metric in app.metric)
 
@@ -435,6 +436,7 @@ def test_dashboard_ui_explains_missing_cost_instead_of_zero_receipts(db,tmp_path
     monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
     app=AppTest.from_file('app.py').run()
     assert not app.exception
+    app.selectbox(key='overview_period').set_value('Свои даты').run()
     metrics={metric.label:metric.value for metric in app.metric}
     assert metrics['Начислено Ozon']=='395,00 ₽'
     assert metrics['Реализация покупателям']=='500,00 ₽'

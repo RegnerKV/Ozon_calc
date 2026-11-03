@@ -5,7 +5,7 @@ import json
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from .core import connect,calculate,money,rub,get_setting,set_setting,save_cost,withdrawal
+from .core import connect,calculate,money,rub,get_setting,set_setting,save_cost,withdrawal,KINDS
 from .presentation import cash,details_frame
 from .api_ui import active_credentials,run_update
 from .runtime import secret,save_api_credentials
@@ -58,6 +58,10 @@ def refresh(db):
             result['catalog_warning']='Не все товары каталога обновлены; загруженные продажи сохранены.'
         finally:client.close()
     ensure_profit(db)
+    from .performance import sync as sync_performance
+    from .credentials import CredentialError
+    try:sync_performance(db,first,today(),password=secret('app_password'))
+    except (ApiError,StorageError,CredentialError) as exc:set_setting(db,'performance_error',str(exc))
     return result
 
 
@@ -88,11 +92,14 @@ def overview(db):
                 except ApiError as exc:notice=('error',str(exc))
                 except Exception:notice=('error','Обновление не завершено. Предыдущие данные сохранены.')
     if notice:getattr(st,notice[0])(notice[1])
-    choice=st.selectbox('Период',['Последний месяц с данными','Этот месяц','За 7 дней','Свои даты'],key='overview_period')
+    choice=st.selectbox('Период',['Текущий месяц','Прошлый месяц','За 7 дней','За последние 30 дней','Свои даты'],key='overview_period')
     if choice=='Свои даты':
         a,b=latest_period(db);c1,c2=st.columns(2)
         start=c1.date_input('С',a,key='period_start',format='DD.MM.YYYY');end=c2.date_input('По',b,key='period_end',format='DD.MM.YYYY')
-    elif choice=='Этот месяц':start,end=today().replace(day=1),today()
+    elif choice=='Текущий месяц':start,end=today().replace(day=1),today()
+    elif choice=='Прошлый месяц':
+        end=today().replace(day=1)-timedelta(days=1);start=end.replace(day=1)
+    elif choice=='За последние 30 дней':start,end=today()-timedelta(days=29),today()
     elif choice=='За 7 дней':start,end=today()-timedelta(days=6),today()
     else:start,end=latest_period(db)
     if end<start:st.error('Проверьте даты');return
@@ -122,16 +129,31 @@ def overview(db):
     top[2].metric('Начислено Ozon',cash(result['net']))
     from .advertising import drr
     advertising=drr(result['details'])
-    st.metric('ДРР магазина за период',f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации')
+    from .performance import report as performance_report
+    perf=performance_report(db,start,end,result['revenue'])
+    if perf:
+        advertising['store']=perf['store'];advertising['unassigned']=perf['unassigned']
+        for sku,value in advertising['products'].items():
+            value['advertising']=perf['products'].get(sku,money(0))
+            value['drr']=value['advertising']/value['revenue']*100 if value['revenue']>0 and perf['unassigned']==0 else None
+        if perf['total']!=advertising['advertising']:
+            st.warning('Реклама требует сверки источников: Performance — '+cash(perf['total'])+', явно выделенные расходы Seller — '+cash(advertising['advertising'])+'. Показанная прибыль пока рассчитана по Seller API.')
+        st.caption('Реклама и ДРР — статистика Performance API. Прибыль и налог рассчитываются по финансовым начислениям Seller API: статистика рекламы повторно из прибыли не вычитается. Расхождения источников требуют сверки.')
+    else:st.caption('Performance API ещё не загружен за весь выбранный период. Реклама ниже — только явно выделенные финансовые операции Seller API; ноль не подтверждает отсутствие рекламных расходов.')
+    if get_setting(db,'performance_error'):st.warning('Не удалось обновить рекламу: '+get_setting(db,'performance_error'))
+    known_ads=perf is not None or advertising['advertising']!=0
+    st.metric('ДРР магазина за период',(f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации') if known_ads else 'Нет данных рекламы')
     if advertising['unassigned']>0:st.caption('Реклама без привязки к артикулу: '+cash(advertising['unassigned'])+'. Она включена в ДРР магазина; полный ДРР отдельных товаров не определён. Общие расходы не распределяются произвольно.')
     frame=details_frame(result['details'])
     ads=sum(((-money(r['amount'])) for r in result['details'] if r['kind'] in ('Реклама','Возврат расходов на рекламу')),money(0))
     row=st.columns(4)
     row[0].metric('Себестоимость',cash(result['costs']))
-    row[1].metric('Налоговый резерв',cash(result['tax']) if not result['stale_api'] else 'Нужен пересчёт')
-    row[2].metric('Реклама',cash(ads))
+    tax_label='Налоги ('+format(money(get_setting(db,'tax_rate','4')).normalize(),'f')+'%)'
+    row[1].metric(tax_label,cash(result['tax']) if not result['stale_api'] else 'Нужен пересчёт')
+    row[2].metric('Реклама',cash(perf['total'] if perf else ads) if known_ads else 'Нет данных рекламы')
     margin=f'{result["profit"]/result["revenue"]*100:.1f} %'.replace('.',',') if result['revenue']>0 and not result['missing'] and not result['stale_api'] else '—'
-    row[3].metric('Рентабельность',margin)
+    row[3].metric('Процент чистой прибыли',margin)
+    st.caption('Процент чистой прибыли = чистая прибыль ÷ реализация покупателям × 100%.')
     minis=st.columns(3)
     for col,label,first in zip(minis,['Сегодня','За 7 дней','Этот месяц'],[today(),today()-timedelta(days=6),today().replace(day=1)]):
         mini,mini_issues,_=snapshot(db,first,today())
@@ -139,20 +161,26 @@ def overview(db):
     if not frame.empty:
         left,right=st.columns([3,2])
         with left:
-            st.subheader('Динамика прибыли' if not result['missing'] else 'Динамика начислений')
-            key='profit' if not result['missing'] and not result['stale_api'] else 'amount'
-            daily=frame.groupby('day')[key].sum()
+            chart=st.selectbox('Динамика',['Чистая прибыль','Реализация покупателям'],key='overview_chart')
+            if chart=='Чистая прибыль' and (result['missing'] or result['stale_api']):
+                st.info('Чистая прибыль пока не рассчитана. На графике показана реализация покупателям.')
+                chart='Реализация покупателям'
+            plotted=frame if chart=='Чистая прибыль' else frame[frame['kind'].isin([KINDS['sale'],KINDS['return']])]
+            daily=plotted.groupby('day')['profit' if chart=='Чистая прибыль' else 'amount'].sum()
+            daily=daily.reindex(pd.date_range(start,end).strftime('%Y-%m-%d'),fill_value=0)
             fig=go.Figure(go.Scatter(x=daily.index,y=daily.values,mode='lines+markers',fill='tozeroy',
                 line={'color':'#5369d8','width':3},marker={'size':5},fillcolor='rgba(83,105,216,.09)',hovertemplate='%{x}<br>%{y:,.2f} ₽<extra></extra>'))
             fig.update_layout(height=270,margin=dict(l=0,r=10,t=10,b=0),paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',xaxis_title=None,yaxis_title='₽',showlegend=False)
             st.plotly_chart(fig,width='stretch')
         with right:
             st.subheader('На что уходят деньги')
-            expenses=frame[frame['amount']<0].groupby('kind')['amount'].sum().mul(-1).sort_values(ascending=False)
-            report=pd.DataFrame({'Статья':expenses.index,'Сумма, ₽':expenses.values})
-            if result['costs']>0:report=pd.concat([report,pd.DataFrame([{'Статья':'Себестоимость','Сумма, ₽':float(rub(result['costs']))}])],ignore_index=True)
-            if result['tax']>0:report=pd.concat([report,pd.DataFrame([{'Статья':'Налоговый резерв','Сумма, ₽':float(rub(result['tax']))}])],ignore_index=True)
-            st.dataframe(report,hide_index=True,width='stretch')
+            from .overview_reports import cashflow,service_breakdown
+            st.dataframe(cashflow(result,tax_label),hide_index=True,width='stretch')
+            st.caption('Плюс — поступление, минус — удержание или возврат денег покупателю. Соинвест объединяет баллы за скидки и партнёрские выплаты; его отмена уменьшает сумму.')
+            with st.expander('Что входит в прочие услуги'):
+                services=service_breakdown(db,start,end)
+                if services:st.dataframe(pd.DataFrame(services),hide_index=True,width='stretch')
+                else:st.caption('В загруженных данных нет подробной расшифровки услуг. Здесь могут учитываться обработка, переупаковка, поставки и другие услуги; это примеры, а не подтверждённый состав расходов этого периода.')
         st.subheader('Результат по товарам')
         products=frame[frame.sku!=''].groupby('sku').agg(name=('name','first'),amount=('amount','sum'),cost=('cost','sum'),tax=('tax','sum'),profit=('profit','sum')).reset_index()
         products['advertising']=products['sku'].map(lambda sku:float(advertising['products'].get(sku,{}).get('advertising',0)))
@@ -164,22 +192,6 @@ def overview(db):
             order=st.text_input('Номер отправления',key='order_filter')
             selected=frame[frame.order_no==order.strip()] if order.strip() else frame
             st.dataframe(selected.rename(columns={'day':'Дата','order_no':'Отправление','sku':'Артикул','name':'Изделие','kind':'Тип','amount':'Начисление','cost':'Стоимость','tax':'Налог','profit':'Результат','issue':'Примечание'}),hide_index=True,width='stretch')
-    st.subheader('Личные деньги')
-    actual=get_setting(db,'cash','')
-    reserve=get_setting(db,'tax_reserve',str(result['tax']))
-    available=withdrawal(actual,reserve,get_setting(db,'materials','0'),get_setting(db,'obligations','0'))
-    c1,c2=st.columns(2)
-    c1.metric('Доступно для вывода',cash(available) if actual else 'Укажите остаток')
-    c2.caption('Прибыль и остаток денег отличаются. Здесь учитываются фактически доступные деньги и ваши резервы.')
-    with st.expander('Остаток и резервы'):
-        with st.form('cash'):
-            amount=st.number_input('Доступные деньги, ₽',min_value=0.0,value=float(actual or 0))
-            tax=st.number_input('Резерв на налоги, ₽',min_value=0.0,value=float(reserve))
-            materials=st.number_input('На материалы, ₽',min_value=0.0,value=float(get_setting(db,'materials','0')))
-            obligations=st.number_input('Обязательные платежи, ₽',min_value=0.0,value=float(get_setting(db,'obligations','0')))
-            if st.form_submit_button('Сохранить резервы'):
-                with db:db.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',[('cash',str(amount)),('tax_reserve',str(tax)),('materials',str(materials)),('obligations',str(obligations))])
-                st.rerun()
 
 
 def products_page(db):
@@ -269,6 +281,8 @@ def settings_page(db,manager):
             st.form_submit_button('Сохранить подключение',type='primary',on_click=remember_connection)
         if st.session_state.get('_simple_connection_status'):st.info(st.session_state['_simple_connection_status'])
         st.caption('Ключ не хранится в открытом виде и не попадает в журнал. В веб-версии его обработка выполняется на сервере приложения.')
+    from .performance import connection_ui as performance_connection
+    performance_connection(db)
     st.subheader('Обновления и налоги')
     with st.form('preferences'):
         auto=st.checkbox('Обновлять данные при открытии',value=get_setting(db,'api_on_start','1')=='1')
