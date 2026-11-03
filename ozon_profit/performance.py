@@ -28,7 +28,9 @@ def save_credentials(db,client,secret,password=''):
     if os.name=='nt':data=b'DPAPI:'+_transform(data)
     elif password:data=b'WEB:'+seal(data,password,'performance-key')
     else:raise StorageError('Защищённое сохранение доступно в Windows или с паролем веб-приложения.')
-    with db:db.execute('INSERT OR REPLACE INTO secure_items VALUES(?,?)',('performance',data))
+    with db:
+        db.execute('INSERT OR REPLACE INTO secure_items VALUES(?,?)',('performance',data))
+        db.execute("DELETE FROM settings WHERE key IN ('performance_start','performance_end','performance_success','performance_error')")
 
 
 def load_credentials(db,password=''):
@@ -63,7 +65,9 @@ class Client:
         if self.token and time.monotonic()<self.expires:return
         r=self.request('POST','/api/client/token',json={'client_id':self.pair[0],'client_secret':self.pair[1],'grant_type':'client_credentials'})
         if not isinstance(r,dict) or not isinstance(r.get('access_token'),str) or not r['access_token']:raise ApiError('Performance API не выдал токен.')
-        self.token=r['access_token'];self.expires=time.monotonic()+max(0,min(int(r.get('expires_in',0)),3600)-60)
+        try:lifetime=int(r.get('expires_in',0))
+        except (ValueError,TypeError):raise ApiError('Performance API вернул неизвестный срок токена.') from None
+        self.token=r['access_token'];self.expires=time.monotonic()+max(0,min(lifetime,3600)-60)
     def expenses(self,start,end):
         self.authorize()
         data=self.request('GET','/api/client/statistics/expense/json',params={'dateFrom':str(start),'dateTo':str(end)},headers={'Authorization':'Bearer '+self.token})

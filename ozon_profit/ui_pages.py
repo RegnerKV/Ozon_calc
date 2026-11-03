@@ -142,6 +142,8 @@ def overview(db):
     else:st.caption('Performance API ещё не загружен за весь выбранный период. Реклама ниже — только явно выделенные финансовые операции Seller API; ноль не подтверждает отсутствие рекламных расходов.')
     if get_setting(db,'performance_error'):st.warning('Не удалось обновить рекламу: '+get_setting(db,'performance_error'))
     known_ads=perf is not None or advertising['advertising']!=0
+    if not known_ads:
+        for value in advertising['products'].values():value['drr']=None
     st.metric('ДРР магазина за период',(f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации') if known_ads else 'Нет данных рекламы')
     if advertising['unassigned']>0:st.caption('Реклама без привязки к артикулу: '+cash(advertising['unassigned'])+'. Она включена в ДРР магазина; полный ДРР отдельных товаров не определён. Общие расходы не распределяются произвольно.')
     frame=details_frame(result['details'])

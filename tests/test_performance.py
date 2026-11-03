@@ -56,3 +56,12 @@ def test_encrypted_connection_and_idempotent_statistic_do_not_double_charge_prof
         def expenses(self,*args):raise ApiError('synthetic outage')
     with pytest.raises(ApiError):sync(db,'2026-10-01','2026-10-31',password,client_factory=Broken)
     assert report(db,'2026-10-01','2026-10-31',1000)['total']==100
+
+
+def test_changed_performance_connection_invalidates_previous_account_coverage():
+    from ozon_profit.core import set_setting
+    db=connect(':memory:');init(db)
+    set_setting(db,'performance_start','2026-10-01');set_setting(db,'performance_end','2026-10-31')
+    save_credentials(db,'new-account@performance','new-fictional-secret','fictional-owner-password')
+    assert report(db,'2026-10-01','2026-10-31',1000) is None
+    db.close()
