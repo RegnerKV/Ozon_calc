@@ -96,6 +96,8 @@ def main():
             expect(page.get_by_text('Чистая прибыль по артикулу',exact=True)).to_be_visible()
             expect(page.locator('.st-key-kpi_sold_units [data-testid="stMetricValue"]')).to_have_text('2 шт.')
             expect(page.locator('.st-key-kpi_article_sold [data-testid="stMetricValue"]')).to_have_text('2 шт.')
+            expect(page.locator('.st-key-kpi_marketplace [data-testid="stMetricValue"]')).to_have_text('12,00 %')
+            expect(page.locator('.st-key-kpi_article_marketplace [data-testid="stMetricValue"]')).to_have_text('12,00 %')
             assert page.get_by_role('combobox',name=re.compile(r'Общие расходы по товарам$')).count()==0
             sidebar=page.get_by_test_id('stSidebar')
             sidebar.get_by_text('Товары',exact=True).click()

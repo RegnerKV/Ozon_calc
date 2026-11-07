@@ -165,10 +165,15 @@ def overview(db):
     metric(top[3],'margin','Процент чистой прибыли',margin,tone('margin',margin_value))
     st.caption('Процент чистой прибыли = чистая прибыль ÷ реализация покупателям × 100%.')
     quantity_known=current_known and not result['net_mode']
-    a,b,c=st.columns(3)
+    from .marketplace_costs import summarize as marketplace_summary
+    marketplace=marketplace_summary(result['details'])
+    marketplace_percent=marketplace['percent'] if current_known and not result['net_mode'] else None
+    marketplace_help='По финансовым начислениям Seller API: (Комиссия + логистика + упаковка и прочие услуги − соинвест) ÷ реализация покупателям × 100%. Возвраты услуг и отмены соинвеста учтены со знаком. Реклама, себестоимость и налоги исключены. Отрицательное значение означает, что возмещения превысили услуги.'
+    a,b,c,d=st.columns(4)
     metric(a,'sold_units','Продано за период',units(result['sold_units']) if quantity_known else 'Нет данных')
     metric(b,'returned_units','Возвраты за период',units(result['returned_units']) if quantity_known else 'Нет данных')
     metric(c,'net_units','Итог после возвратов',units(result['net_units']) if quantity_known else 'Нет данных',help='Проданные штуки минус возвращённые за выбранные даты. Возвраты старых продаж могут дать отрицательный итог.')
+    metric(d,'marketplace','Расходы на Ozon без рекламы, %',f'{marketplace_percent:.2f} %'.replace('.',',') if marketplace_percent is not None else '—',help=marketplace_help+' Сумма за период: '+cash(marketplace['amount']))
     minis=st.columns(3)
     for col,label,first in zip(minis,['Сегодня','За 7 дней','Этот месяц'],[today(),today()-timedelta(days=6),today().replace(day=1)]):
         mini,mini_issues,_=snapshot(db,first,today())
@@ -204,10 +209,13 @@ def overview(db):
         for sku,p in overview_products['products'].items():
             lines.append({'Артикул':sku,'Изделие':names.get(sku) or p['name'] or sku,'Продано, шт.':float(p['sold_quantity']),'Возвраты, шт.':float(p['returned_quantity']),'Итог, шт.':float(p['quantity']),
                 'Реализация, ₽':float(rub(p['revenue'])),'Себестоимость, ₽':float(rub(p['costs'])),'Налоги, ₽':float(rub(p['tax'])),
+                'Расходы на Ozon без рекламы, %':float(p['marketplace_percent']) if p['marketplace_percent'] is not None else None,
                 'Чистая прибыль по артикулу, ₽':float(rub(p['profit'])) if not p['blocked'] else None,
                 'Реклама, ₽':float(rub(p['advertising'])) if overview_products['allocated'] or overview_products['unassigned_advertising']==0 else None,'ДРР, %':float(p['drr']) if p['drr'] is not None else None})
         if lines:
-            st.dataframe(pd.DataFrame(lines),hide_index=True,width='stretch',column_config={name:st.column_config.NumberColumn(format='%d') for name in ('Продано, шт.','Возвраты, шт.','Итог, шт.')})
+            table_columns={name:st.column_config.NumberColumn(format='%d') for name in ('Продано, шт.','Возвраты, шт.','Итог, шт.')}
+            table_columns['Расходы на Ozon без рекламы, %']=st.column_config.NumberColumn(format='%.2f')
+            st.dataframe(pd.DataFrame(lines),hide_index=True,width='stretch',column_config=table_columns)
             selected_sku=st.selectbox('Посмотреть артикул',list(overview_products['products']),format_func=lambda sku:(names.get(sku) or sku)+' · '+sku,key='article_dashboard')
             p=overview_products['products'][selected_sku]
             prior_products=summarize(prior,allocate_shared=True)['products'] if prior_known else {}
@@ -219,10 +227,11 @@ def overview(db):
             metric(a,'article_sold','Продано по артикулу',units(p['sold_quantity']))
             metric(b,'article_returned','Возвраты по артикулу',units(p['returned_quantity']))
             metric(c,'article_units','Итог по артикулу',units(p['quantity']))
-            c1,c2,c3=st.columns(3)
+            c1,c2,c3,c4=st.columns(4)
             metric(c1,'article_profit','Чистая прибыль по артикулу',cash(p['profit']) if not p['blocked'] else 'Недостаточно данных',tone('profit',p['profit'] if not p['blocked'] else None))
             metric(c2,'article_revenue','Реализация по артикулу',cash(p['revenue']),tone('revenue',p['revenue'],prior_revenue),help=comparison_note+(' · '+cash(prior_revenue) if prior_revenue is not None else ' · нет данных'))
             metric(c3,'article_drr','ДРР артикула',f'{p["drr"]:.2f} %'.replace('.',',') if p['drr'] is not None and product_ads_known else 'Нет данных рекламы',tone('drr',p['drr'] if product_ads_known else None))
+            metric(c4,'article_marketplace','Расходы на Ozon по артикулу, %',f'{p["marketplace_percent"]:.2f} %'.replace('.',',') if p['marketplace_percent'] is not None else '—',help=marketplace_help+' Общие расходы распределены по выручке. Сумма по артикулу: '+cash(p['marketplace_costs']))
             c1,c2,c3,c4=st.columns(4)
             metric(c1,'article_costs','Себестоимость артикула',cash(p['costs']))
             metric(c2,'article_tax','Налоги по артикулу',cash(p['tax']))

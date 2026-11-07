@@ -47,6 +47,9 @@ def test_article_dashboard_switch_does_not_filter_store_totals(tmp_path,monkeypa
     assert next(m.value for m in app.metric if m.label=='Продано за период')=='20 шт.'
     assert next(m.value for m in app.metric if m.label=='Продано по артикулу')=='10 шт.'
     assert 'Продано, шт.' in app.dataframe[0].value.columns
+    assert next(m.value for m in app.metric if m.label=='Расходы на Ozon без рекламы, %')=='10,00 %'
+    assert next(m.value for m in app.metric if m.label=='Расходы на Ozon по артикулу, %')=='10,00 %'
+    assert 'Расходы на Ozon без рекламы, %' in app.dataframe[0].value.columns
     app.selectbox(key='article_dashboard').set_value('b').run()
     assert not app.exception
     assert main()=='900,00 ₽' and article()=='200,00 ₽'

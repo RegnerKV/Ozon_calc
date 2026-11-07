@@ -1,8 +1,9 @@
 """Article P&L with an explicit, reversible view-only shared-cost allocation."""
 from collections import defaultdict
 from .core import money,ZERO,KINDS
+from .marketplace_costs import contribution,percentage
 
-FIELDS=('net','revenue','costs','tax','profit','advertising')
+FIELDS=('net','revenue','costs','tax','profit','advertising','marketplace_costs')
 
 
 def summarize(result,allocate_shared=True):
@@ -13,6 +14,7 @@ def summarize(result,allocate_shared=True):
         if row.get('name'):p['name']=row['name']
         amount=money(row['amount']);cost=money(row['cost']);tax=money(row['tax'])
         p['net']+=amount;p['costs']+=cost;p['tax']+=tax;p['profit']+=amount-cost-tax
+        p['marketplace_costs']+=contribution(row)
         if row['kind'] in (KINDS['sale'],KINDS['return']):
             p['sold_quantity' if row['kind']==KINDS['sale'] else 'returned_quantity']+=money(row.get('quantity',0))
             p['revenue']+=amount;p['quantity']+=money(row.get('quantity',0))*(1 if row['kind']==KINDS['sale'] else -1)
@@ -35,6 +37,7 @@ def summarize(result,allocate_shared=True):
                 if field=='profit':products[sku]['allocated']=value
     allocation_complete=not has_shared or bool(allocate_shared and total>0)
     for p in products.values():
+        p['marketplace_percent']=percentage(p['marketplace_costs'],p['revenue']) if not result['stale_api'] and not result['net_mode'] and (not shared['marketplace_costs'] or (allocate_shared and total>0)) else None
         p['approximate']=p['estimated'] or bool(allocate_shared and has_shared)
         p['blocked']=p['missing'] or result['stale_api'] or not allocation_complete
         p['drr']=p['advertising']/p['revenue']*100 if p['revenue']>0 and (allocate_shared or shared['advertising']==0) else None
