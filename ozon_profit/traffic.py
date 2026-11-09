@@ -26,6 +26,7 @@ def day(value):
 
 
 def count(value):
+    if value is None or not str(value).strip():raise ApiError('Количество в статистике не заполнено. Пропуск не считается нулём.')
     try:
         n=money(value)
         if n<0 or n!=n.to_integral_value():raise ValueError
@@ -136,15 +137,19 @@ def fetch_clicks(client,start,end):
     if not ids:raise ApiError('Не найдены кампании с типом оплаты CPC. Исторические расходы не заменены нулями.')
     totals={};d=start
     while d<=end:totals[str(d)]=Decimal(0);d+=timedelta(days=1)
-    campaigns=sorted(ids)
+    campaigns=sorted(ids);seen=set()
     for i in range(0,len(campaigns),10):
         data=auth_get(client,'/api/client/statistics/daily/json',{'dateFrom':str(start),'dateTo':str(end),'campaignIds':campaigns[i:i+10]})
         for r in rows(data):
             campaign=str(field(r,'campaignId','id','Идентификатор кампании'))
-            if campaign not in ids:raise ApiError('Отчёт содержит кампанию другого типа. Расходы не заменены.')
+            if campaign not in campaigns[i:i+10]:raise ApiError('Отчёт содержит незапрошенную кампанию. Расходы не заменены.')
             d=day(field(r,'date','Дата'))
             if d not in totals:raise ApiError('Дата кликовой рекламы вне запрошенного периода.')
-            try:amount=money(field(r,'expense','moneySpent','spent','Расход, ₽'))
+            if (d,campaign) in seen:raise ApiError('Повторная строка кампании за день. Расходы не заменены.')
+            seen.add((d,campaign))
+            raw=field(r,'expense','moneySpent','spent','Расход, ₽')
+            if raw is None or not str(raw).strip():raise ApiError('Расход в отчёте не заполнен. Пропуск не считается нулём.')
+            try:amount=money(raw)
             except ValueError:raise ApiError('Не распознан расход в отчёте кликовой рекламы.') from None
             if amount<0:raise ApiError('Отрицательный расход требует отдельной проверки отчёта.')
             totals[d]+=amount

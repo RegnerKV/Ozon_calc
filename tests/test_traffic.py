@@ -118,3 +118,8 @@ def test_chart_contains_status_background_and_does_not_connect_missing_views():
     assert fig.layout.shapes[0].fillcolor=='#dff568'
     assert fig.data[-1].connectgaps is False
     assert not chart(frame,False,False).layout.shapes
+
+
+@pytest.mark.parametrize('value',[None,'',float('nan'),-1,1.5])
+def test_missing_or_invalid_count_never_becomes_zero(value):
+    with pytest.raises(ApiError):traffic.count(value)
