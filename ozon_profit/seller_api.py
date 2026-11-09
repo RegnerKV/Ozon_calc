@@ -111,7 +111,7 @@ class SellerClient:
         return re.sub(r'\s+',' ',text).strip()[:600]
 
     def post(self,endpoint,payload):
-        if endpoint not in (*ENDPOINTS.values(),PRODUCT_INFO,PRODUCT_LIST):raise ApiError('Недопустимый метод API')
+        if endpoint not in (*ENDPOINTS.values(),PRODUCT_INFO,PRODUCT_LIST,'/v1/analytics/data'):raise ApiError('Недопустимый метод API')
         for attempt in range(4):
             try:
                 response=self.session.post(BASE+endpoint,json=payload,

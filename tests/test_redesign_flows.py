@@ -24,7 +24,7 @@ def setup_store(tmp_path):
 def test_plan_ui_persists_after_new_session_and_extra_ads_reduce_profit(tmp_path,monkeypatch):
     monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path));setup_store(tmp_path)
     app=AppTest.from_file('app.py').run()
-    assert app.sidebar.radio[0].options==['Обзор','Товары','План продаж','Настройки']
+    assert app.sidebar.radio[0].options==['Обзор','Товары','План продаж','Реклама','Настройки']
     app.sidebar.radio[0].set_value('План продаж').run()
     app.selectbox(key='plan_product').set_value('demo')
     next(b for b in app.button if b.label=='Добавить в план').click().run()

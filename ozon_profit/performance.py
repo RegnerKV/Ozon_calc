@@ -2,6 +2,7 @@
 from datetime import date,datetime,timedelta,timezone
 import json
 import os
+import re
 import time
 import requests
 from .core import money,get_setting,set_setting
@@ -51,7 +52,13 @@ class Client:
     def __repr__(self):return '<PerformanceClient credentials=hidden>'
     def close(self):self.session.close();self.token='';self.pair=('', '')
     def request(self,method,path,**kwargs):
-        if path not in ('/api/client/token','/api/client/statistics/expense/json'):raise ApiError('Недопустимый метод Performance API')
+        allowed={'/api/client/token':'POST','/api/client/statistics/expense/json':'GET',
+            '/api/client/campaign':'GET','/api/client/statistics/daily/json':'GET',
+            '/api/client/statistics/all_sku_promo/products/generate/json':'GET',
+            '/api/client/statistics/report':'GET'}
+        expected=allowed.get(path)
+        if expected is None and re.fullmatch(r'/api/client/statistics/[a-zA-Z0-9-]{1,100}',path):expected='GET'
+        if expected!=method:raise ApiError('Недопустимый метод Performance API')
         for attempt in range(4):
             try:r=self.session.request(method,BASE+path,timeout=(10,45),allow_redirects=False,**kwargs)
             except requests.RequestException:

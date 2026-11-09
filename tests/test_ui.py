@@ -1,7 +1,7 @@
 from streamlit.testing.v1 import AppTest
 import pytest
 
-@pytest.mark.parametrize('page',['Обзор','Товары','План продаж','Настройки'])
+@pytest.mark.parametrize('page',['Обзор','Товары','План продаж','Реклама','Настройки'])
 def test_page_starts(tmp_path,monkeypatch,page):
     monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
     app=AppTest.from_file('app.py',default_timeout=20).run()

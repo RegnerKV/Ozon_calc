@@ -110,6 +110,10 @@ def main():
             expect(page.get_by_text('18 382,75 ₽',exact=True)).to_be_visible()
             expect(page.get_by_text('Продвижение за заказы',exact=True)).to_be_visible()
             expect(page.get_by_role('heading',name='Полный расчёт прибыли',exact=True)).to_be_visible()
+            sidebar.get_by_text('Реклама',exact=True).click()
+            expect(page.get_by_role('heading',name='Реклама и показы',exact=True)).to_be_visible()
+            expect(page.get_by_test_id('stPlotlyChart')).to_be_visible()
+            assert page.get_by_test_id('stException').count()==0
             sidebar.get_by_text('Настройки',exact=True).click()
             expect(page.get_by_text('Подключён · ключ сохранён и подхватывается автоматически',exact=True)).to_be_visible()
             page.screenshot(path=str(ROOT/'windows-smoke.png'),full_page=True)

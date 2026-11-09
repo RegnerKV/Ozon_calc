@@ -31,7 +31,8 @@ st.markdown('''<style>
 [data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(1)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%273%27%20y%3D%273%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%273%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3Crect%20x%3D%273%27%20y%3D%2714%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%2714%27%20width%3D%277%27%20height%3D%277%27%20rx%3D%271.5%27%2F%3E%3C%2Fsvg%3E");}
 [data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(2)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M5%208h14l1%2013H4L5%208zM8%208V6a4%204%200%20018%200v2%27%2F%3E%3C%2Fsvg%3E");}
 [data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(3)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M3%204v16h18M6%2015l5-5%204%203%206-8%27%2F%3E%3C%2Fsvg%3E");}
-[data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(4)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M4%207h16M4%2017h16%27%2F%3E%3Ccircle%20cx%3D%279%27%20cy%3D%277%27%20r%3D%273%27%20fill%3D%27white%27%2F%3E%3Ccircle%20cx%3D%2715%27%20cy%3D%2717%27%20r%3D%273%27%20fill%3D%27white%27%2F%3E%3C%2Fsvg%3E");}
+[data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(5)::before{background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%234a73ba%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M4%207h16M4%2017h16%27%2F%3E%3Ccircle%20cx%3D%279%27%20cy%3D%277%27%20r%3D%273%27%20fill%3D%27white%27%2F%3E%3Ccircle%20cx%3D%2715%27%20cy%3D%2717%27%20r%3D%273%27%20fill%3D%27white%27%2F%3E%3C%2Fsvg%3E");}
+[data-testid="stSidebar"] [role="radiogroup"]>label:nth-child(4)::before{content:"↗";font-size:24px;color:#0956ff;line-height:20px}
 .ozon-expenses{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;border:1px solid #e1e7f0;border-radius:16px;overflow:hidden;background:white;font-size:15px}
 .ozon-expenses th{text-align:left;padding:13px 16px;color:#67758a;font-weight:500;background:#f9fbfe}
 .ozon-expenses td{padding:13px 16px;border-top:1px solid #edf0f5}
@@ -65,7 +66,7 @@ st.sidebar.markdown('<div class="brand">Ozon Profit</div>',unsafe_allow_html=Tru
 st.sidebar.markdown('<div class="shop-name">ХОЧУ! Цацки</div>',unsafe_allow_html=True)
 st.sidebar.image(str(Path(__file__).parent/'static'/'shop-logo.png'),width=120)
 storage_status=st.sidebar.empty()
-page=st.sidebar.radio('Раздел',['Обзор','Товары','План продаж','Настройки'],label_visibility='collapsed')
+page=st.sidebar.radio('Раздел',['Обзор','Товары','План продаж','Реклама','Настройки'],label_visibility='collapsed')
 # Retain an already entered session key during the first migration to encrypted storage.
 if st.session_state.get('_seller_pair') and not db.execute('SELECT 1 FROM secure_items WHERE name=?',('seller',)).fetchone():
     from ozon_profit.runtime import secret,save_api_credentials
@@ -95,6 +96,9 @@ try:
     elif page=='План продаж':
         from ozon_profit.plan_ui import plan_page
         plan_page(db)
+    elif page=='Реклама':
+        from ozon_profit.traffic_ui import traffic_page
+        traffic_page(db)
     else:settings_page(db,manager)
 finally:
     manager.persist(db)
