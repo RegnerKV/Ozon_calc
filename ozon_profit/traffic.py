@@ -85,6 +85,9 @@ def promo_column(batch):
     for k in named or keys:
         values=[r[k] for r in batch if k in r]
         if len(values)!=len(batch):continue
+        hint=any(part in normalized(k) for part in ('promo','продвиж','status','статус','enabled','active'))
+        explicit={'включено','выключено','включен','выключен','включена','выключена','on','off','enabled','disabled'}
+        if k not in named and not hint and any(normalized(v) not in explicit for v in values):continue
         try:
             for v in values:promo_state(v,allow_numbers=False)
         except ApiError:continue

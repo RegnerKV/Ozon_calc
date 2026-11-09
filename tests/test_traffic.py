@@ -165,3 +165,8 @@ def test_source_errors_survive_reruns_and_new_sessions(tmp_path,monkeypatch):
     reopened.sidebar.radio[0].set_value('Реклама').run()
     assert not reopened.exception
     assert any('HTTP 403' in w.value for w in reopened.warning)
+
+
+def test_unrelated_boolean_flag_is_not_promotion_state():
+    with pytest.raises(ApiError):traffic.parse_promo([{'date':str(A),'isReturned':False,'expense':0}],A,B)
+    assert traffic.parse_promo([{'date':str(A),'allSkuPromoEnabled':True}],A,B)==[(str(A),'on')]
