@@ -45,26 +45,27 @@ def traffic_page(db):
     sku=st.selectbox('Товар',['']+skus,format_func=lambda x:links.get(x,x) if x else 'Весь магазин',key='traffic_sku')
     if sku:st.caption('Статус оплаты за заказ относится ко всему магазину. Расходы за клики здесь не распределяются по выручке: отчёт пока доступен только по кампаниям.')
     pending=get_setting(db,'traffic_pending','')
-    if st.button('Проверить готовность отчёта' if pending else 'Обновить аналитику',type='primary'):
-        errors=[];notes=[]
+    def failed(source,message):set_setting(db,'traffic_error_'+source,message)
+    if st.button('Обновить аналитику',type='primary'):
+        notes=[]
         pair=active_credentials()
         # A persisted minute guard also protects a second app session/repeated clicks.
         stamp=get_setting(db,'traffic_seller_attempt','')
         try:cooldown=bool(stamp) and (datetime.now(timezone.utc)-datetime.fromisoformat(stamp)).total_seconds()<61
         except ValueError:cooldown=False
-        if not pending:
-            if not pair:errors.append('Seller API не подключён. Добавьте ключ в настройках.')
-            elif cooldown:notes.append('Показы: предыдущий запрос был менее минуты назад. Повторите позже.')
-            else:
-                set_setting(db,'traffic_seller_attempt',datetime.now(timezone.utc).isoformat())
-                client=SellerClient(*pair)
-                try:
-                    with st.spinner('Получаем общие показы по товарам…'):
-                        data=traffic.fetch_traffic(client,start,end)
-                        traffic.replace(db,'traffic',start,end,data)
-                    notes.append(f'Показы: загружено {len(data)} строк.')
-                except ApiError as exc:errors.append('Показы: '+str(exc)+' В кабинете и API могут действовать разные ограничения. При необходимости используйте импорт ниже.')
-                finally:client.close()
+        if not pair:failed('traffic','Показы: Seller API не подключён. Добавьте ключ в настройках.')
+        elif cooldown:notes.append('Показы: предыдущий запрос был менее минуты назад. Повторите позже.')
+        else:
+            set_setting(db,'traffic_seller_attempt',datetime.now(timezone.utc).isoformat())
+            client=SellerClient(*pair)
+            try:
+                with st.spinner('Получаем общие показы по товарам…'):
+                    data=traffic.fetch_traffic(client,start,end)
+                    traffic.replace(db,'traffic',start,end,data)
+                    set_setting(db,'traffic_error_traffic','')
+                notes.append(f'Показы: загружено {len(data)} строк.')
+            except ApiError as exc:failed('traffic','Показы: '+str(exc)+' В кабинете и API могут действовать разные ограничения. При необходимости используйте импорт ниже.')
+            finally:client.close()
         client=None
         try:
             pair=performance.load_credentials(db,secret('app_password'))
@@ -81,32 +82,34 @@ def traffic_page(db):
             if uuid:
                 import json
                 set_setting(db,'traffic_pending',json.dumps({'uuid':uuid,'start':a,'end':b}))
-                notes.append('Ozon готовит историю продвижения. Нажмите «Проверить готовность отчёта» через несколько секунд.')
+                notes.append('Ozon готовит историю продвижения. Нажмите «Обновить аналитику» через несколько секунд для проверки готовности.')
             else:
-                traffic.replace(db,'promo',a,b,data);set_setting(db,'traffic_pending','')
+                traffic.replace(db,'promo',a,b,data);set_setting(db,'traffic_pending','');set_setting(db,'traffic_error_promo','')
                 notes.append('История продвижения за заказ сохранена.')
         except (ApiError,ValueError) as exc:
-            errors.append('Продвижение за заказ: '+str(exc));set_setting(db,'traffic_pending','')
+            failed('promo','Продвижение за заказ: '+str(exc));set_setting(db,'traffic_pending','')
         except Exception:
-            errors.append('Не удалось открыть защищённое подключение Performance API. Проверьте настройки.')
+            failed('promo','Не удалось открыть защищённое подключение Performance API. Проверьте настройки.')
         finally:
             if client:client.close()
-        if not pending:
-            client=None
-            try:
-                pair=performance.load_credentials(db,secret('app_password'))
-                if pair:
-                    client=performance.Client(*pair)
-                    with st.spinner('Получаем расходы за клики…'):
-                        data=traffic.fetch_clicks(client,start,end)
-                        traffic.replace(db,'click',start,end,data)
-                    notes.append('Расходы за клики сохранены.')
-            except ApiError as exc:errors.append('Оплата за клики: '+str(exc))
-            except Exception:errors.append('Не удалось открыть подключение Performance API.')
-            finally:
-                if client:client.close()
+        client=None
+        try:
+            pair=performance.load_credentials(db,secret('app_password'))
+            if pair:
+                client=performance.Client(*pair)
+                with st.spinner('Получаем расходы за клики…'):
+                    data=traffic.fetch_clicks(client,start,end)
+                    traffic.replace(db,'click',start,end,data)
+                    set_setting(db,'traffic_error_click','')
+                notes.append('Расходы за клики сохранены.')
+        except ApiError as exc:failed('click','Оплата за клики: '+str(exc))
+        except Exception:failed('click','Не удалось открыть подключение Performance API.')
+        finally:
+            if client:client.close()
         for note in notes:st.info(note)
-        for error in errors:st.warning(error)
+    for source in ('traffic','promo','click'):
+        error=get_setting(db,'traffic_error_'+source,'')
+        if error:st.warning(error)
     stamps=list(db.execute('SELECT source,stamp FROM traffic_updates ORDER BY source'))
     if stamps:
         names={'traffic':'Показы','promo':'Статусы','click':'Клики'}

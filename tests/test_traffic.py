@@ -123,3 +123,45 @@ def test_chart_contains_status_background_and_does_not_connect_missing_views():
 @pytest.mark.parametrize('value',[None,'',float('nan'),-1,1.5])
 def test_missing_or_invalid_count_never_becomes_zero(value):
     with pytest.raises(ApiError):traffic.count(value)
+
+
+@pytest.mark.parametrize('header,value,expected',[
+ ('isEnabled',True,'on'),('is_active',False,'off'),('Статус','Включён','on'),
+ ('Статус продвижения ','Выключена','off'),('promotion_status','ACTIVE','on'),
+ ('Продвижение всех товаров','Выключено','off'),
+])
+def test_promo_report_header_variants_and_explicit_display_labels(header,value,expected):
+    assert traffic.parse_promo([{'Дата':str(A),header:value,'expense':'0'}],A,B)==[(str(A),expected)]
+
+
+def test_promo_does_not_infer_status_from_money_or_conflicting_labels():
+    with pytest.raises(ApiError) as exc:
+        traffic.parse_promo([{'date':str(A),'expense':'0','orders':1,'unknown':'private-value-not-for-errors'}],A,B)
+    assert 'expense' in str(exc.value) and 'private-value-not-for-errors' not in str(exc.value)
+    with pytest.raises(ApiError):
+        traffic.parse_promo([{'date':str(A),'Статус A':'Включено','Статус B':'Выключено'}],A,B)
+
+
+def test_source_errors_survive_reruns_and_new_sessions(tmp_path,monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    import ozon_profit.traffic_ui as ui
+    from ozon_profit.core import set_setting
+    monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
+    db=connect();set_setting(db,'api_on_start','0');db.close()
+    monkeypatch.setattr(ui,'active_credentials',lambda:('123','synthetic'))
+    class Denied:
+        def __init__(self,*a):pass
+        def post(self,*a):raise ApiError('HTTP 403: доступ к показам ограничен')
+        def close(self):pass
+    monkeypatch.setattr(ui,'SellerClient',Denied)
+    app=AppTest.from_file('app.py').run()
+    app.sidebar.radio[0].set_value('Реклама').run()
+    next(b for b in app.button if b.label=='Обновить аналитику').click().run()
+    assert not app.exception
+    assert any('HTTP 403' in w.value for w in app.warning)
+    app.checkbox[0].uncheck().run()
+    assert any('HTTP 403' in w.value for w in app.warning)
+    reopened=AppTest.from_file('app.py').run()
+    reopened.sidebar.radio[0].set_value('Реклама').run()
+    assert not reopened.exception
+    assert any('HTTP 403' in w.value for w in reopened.warning)

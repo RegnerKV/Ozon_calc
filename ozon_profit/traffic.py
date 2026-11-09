@@ -52,17 +52,58 @@ def field(row,*names):
     raise ApiError('В отчёте не найдена колонка «'+names[-1]+'». Сохранённые данные не заменены.')
 
 
+def normalized(value):
+    return re.sub(r'[\s_\-()]+','',str(value).lstrip('\ufeff').strip().casefold().replace('ё','е'))
+
+
+def promo_state(value,allow_numbers=True):
+    text=normalized(value)
+    on={'true','on','enabled','active','включено','включен','включена','активно','активен','активна','да'}
+    off={'false','off','disabled','inactive','выключено','выключен','выключена','неактивно','неактивен','неактивна','нет'}
+    if allow_numbers:on.add('1');off.add('0')
+    if text in on:return 'on'
+    if text in off:return 'off'
+    if text in ('mixed','смешанный','менялосьвтечениедня'):return 'mixed'
+    raise ApiError('Не распознан статус продвижения. Неизвестный статус не считается выключенным.')
+
+
+def report_columns(batch):
+    # Header names only: never include row values, tokens, amounts or raw JSON.
+    names=sorted({str(k) for row in batch for k in row})
+    return ', '.join(n for n in names if len(n)<=80 and re.fullmatch(r'[\w\s.,%()₽/\-]+',n))[:700] or 'не распознаны'
+
+
+def promo_column(batch):
+    aliases={normalized(k) for k in ('status','promotionStatus','promoStatus','state','isEnabled','enabled',
+        'isActive','active','isPromotionEnabled','Статус продвижения','Статус','Продвижение включено','Продвижение')}
+    keys={k for row in batch for k in row}
+    named=[k for k in keys if normalized(k) in aliases]
+    if len(named)==1:return named[0]
+    # Some reports use a display header not documented in the OpenAPI.
+    # Infer only explicit on/off labels (not 0/1 expenses, IDs or order counts).
+    candidates=[]
+    for k in named or keys:
+        values=[r[k] for r in batch if k in r]
+        if len(values)!=len(batch):continue
+        try:
+            for v in values:promo_state(v,allow_numbers=False)
+        except ApiError:continue
+        candidates.append(k)
+    if len(candidates)==1:return candidates[0]
+    raise ApiError('Не удалось однозначно определить статус продвижения. Названия колонок отчёта: '+report_columns(batch)+'. Прежние данные сохранены. Эти названия можно сообщить разработчику без самого отчёта.')
+
+
 def parse_promo(data,start,end):
-    result={}
-    for r in rows(data):
-        d=day(field(r,'date','day','Дата'))
+    result={};batch=rows(data)
+    if not batch:return []
+    column=promo_column(batch)
+    for r in batch:
+        dates=[v for k,v in r.items() if normalized(k) in ('date','day','дата')]
+        if len(dates)!=1:raise ApiError('Не найдена однозначная дата продвижения. Колонки: '+report_columns(batch))
+        d=day(dates[0])
         if not str(start)<=d<=str(end):raise ApiError('Дата продвижения вне запрошенного периода.')
-        raw=field(r,'status','promotionStatus','Статус продвижения')
-        text=str(raw).strip().lower()
-        if text in ('true','1','on','enabled','включено'):status='on'
-        elif text in ('false','0','off','disabled','выключено'):status='off'
-        elif text in ('mixed','смешанный'):status='mixed'
-        else:raise ApiError('Не распознан статус продвижения. Неизвестный статус не считается выключенным.')
+        if column not in r:raise ApiError('В части строк отсутствует статус продвижения. Прежние данные сохранены.')
+        status=promo_state(r[column])
         if d in result and result[d]!=status:status='mixed'
         result[d]=status
     return [(d,s) for d,s in result.items()]
