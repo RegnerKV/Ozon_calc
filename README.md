@@ -12,7 +12,7 @@
 
 ## Первый запуск Windows
 
-Готовая проверенная beta-сборка: [OzonProfit-Windows.zip](https://github.com/RegnerKV/Ozon_calc/releases/download/v0.4.0-rc.2/OzonProfit-Windows.zip), около 115 МБ. Проверка Windows: [workflow](https://github.com/RegnerKV/Ozon_calc/actions/runs/42578561506). Распакуйте весь архив и дважды нажмите OzonProfit.exe. В настройках один раз введите Client ID и ключ Seller API на чтение, в товарах один раз загрузите себестоимость и проверьте дату. Дальше данные подхватываются автоматически.
+Готовая проверенная beta-сборка: [OzonProfit-Windows.zip](https://github.com/RegnerKV/Ozon_calc/releases/download/v0.4.0-rc.4/OzonProfit-Windows.zip), около 115 МБ. Проверка Windows: [workflow](https://github.com/RegnerKV/Ozon_calc/actions/runs/42580459476). Распакуйте весь архив и дважды нажмите OzonProfit.exe. В настройках один раз введите Client ID и ключ Seller API на чтение, в товарах один раз загрузите себестоимость и проверьте дату. Дальше данные подхватываются автоматически.
 
 Приложение хранит базу в `%LOCALAPPDATA%\OzonProfit\profit.db`, отдельно от папки EXE. Повторный запуск открывает уже работающий экземпляр. Закрытие вкладки не останавливает сервер; для завершения закройте консольное окно. Сборка не подписана цифровой подписью. Используйте собственный проверенный релиз, не отключайте защиту Windows.
 
