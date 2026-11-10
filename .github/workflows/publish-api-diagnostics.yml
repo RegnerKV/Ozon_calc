@@ -1,0 +1,70 @@
+name: Publish verified API diagnostic download
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['diagnostics/api-capabilities']
+    paths: ['.github/workflows/publish-api-diagnostics.yml']
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download the already tested Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: OzonApiDiagnostics-Windows
+          run-id: 42834841785
+          github-token: ${{ github.token }}
+          path: release
+      - name: Verify source and executable checksum before publication
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib
+          import re
+          import zipfile
+          path = Path('release/OzonApiDiagnostics-Windows.zip')
+          with zipfile.ZipFile(path) as archive:
+              assert archive.testzip() is None
+              assert set(archive.namelist()) == {'OzonApiDiagnostics.exe', 'READ-ME.md', 'source-commit.txt', 'SHA256.txt'}
+              source = archive.read('source-commit.txt').decode('utf-8-sig').strip()
+              assert source == 'beaf8cc51306dda78dd295eb633ee6d072ced553'
+              executable = archive.read('OzonApiDiagnostics.exe')
+              assert executable.startswith(b'MZ')
+              digest = hashlib.sha256(executable).hexdigest()
+              manifest = archive.read('SHA256.txt').decode('utf-8-sig')
+              assert re.search(r'\b' + digest + r'\b', manifest, re.IGNORECASE)
+          Path(str(path) + '.sha256').write_text(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name + '\n', encoding='ascii')
+          print('Verified Windows EXE SHA256:', digest)
+          print('Verified source:', source)
+      - name: Prepare download instructions
+        shell: bash
+        run: |
+          cat > release/notes.md <<'NOTES'
+          Отдельная диагностика API для Windows, без установки Python.
+
+          Скачайте OzonApiDiagnostics-Windows.zip в Assets, распакуйте и запустите OzonApiDiagnostics.exe под той же учётной записью Windows, в которой сохранены подключения Seller и Performance.
+
+          Использует уже сохранённые ключи. Основная база открывается только для чтения; импорт и пересчёт финансов не запускаются. JSON не содержит ключей, токенов, заказов и финансовых операций. Основное приложение не обновляется, отдельный раздел «Реклама» не добавляется.
+
+          Период: 13.10–09.11.2026. Контрольный артикул: подвеска_наличник. Фактический доступ к API проверяется при запуске на компьютере владельца. HTTP 400/403/404 не устанавливают подписку.
+
+          Это тот же архив из успешной Windows-проверки https://github.com/RegnerKV/Ozon_calc/actions/runs/42834841785 (beaf8cc): тесты, сборка EXE, настоящий DPAPI, неизменность тестовой базы и безопасный JSON. Перед публикацией проверены исходный commit и SHA-256 EXE внутри архива.
+          NOTES
+      - name: Publish the verified ZIP with an ordinary public download URL
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh release create api-diagnostics-2026-11-10
+          release/OzonApiDiagnostics-Windows.zip
+          release/OzonApiDiagnostics-Windows.zip.sha256
+          --target beaf8cc51306dda78dd295eb633ee6d072ced553
+          --title "Диагностика API для Windows — 10.11.2026"
+          --prerelease --notes-file release/notes.md
