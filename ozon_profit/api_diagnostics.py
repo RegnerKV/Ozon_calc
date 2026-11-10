@@ -260,6 +260,7 @@ def run(directory=None, *, transport=None, offline=False, progress=lambda messag
             'advertising_attributed_orders': None,
             'conversion_computed': False},
         'scope': 'capability_samples_not_full_import_or_financial_reconciliation',
+        'sku_resolution': 'local_mapping_unverified' if skus else 'unresolved',
         'checks': [],
     }
     if offline:
@@ -298,6 +299,7 @@ def run(directory=None, *, transport=None, offline=False, progress=lambda messag
                         r'[1-9][0-9]{0,19}', str(v)))
                 if live_skus:
                     skus = live_skus
+                    report['sku_resolution'] = 'live_product_info'
             for scheme, path in [('fbo', '/v3/posting/fbo/list'),
                                  ('fbs', '/v4/posting/fbs/list')]:
                 entry, data = probe('orders_' + scheme, 'seller', 'POST', path, headers,
@@ -379,6 +381,8 @@ def _performance_checks(probe, transport, headers, skus, max_campaigns):
     entry['CPC_campaigns_found'] = len(campaigns)
     entry['campaign_listing_complete'] = complete
     entry['campaign_reports_limited'] = len(campaigns) > max_campaigns
+    if not campaigns:
+        entry['statistics_probe'] = 'not_run_no_CPC_campaigns_found_not_proof_of_no_historical_spend'
     if not skus:
         entry['target_validation'] = 'SKU_unresolved_no_product_attribution'
     # One campaign at a time respects the published one-export/account limit.

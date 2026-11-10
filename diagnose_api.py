@@ -8,6 +8,10 @@ import sys
 
 
 def main(argv=None):
+    # A packaged EXE piped by CI may inherit a non-Cyrillic Windows code page.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser(description='Ozon API: безопасная диагностика сохранённых подключений')
     parser.add_argument('--data-dir', type=Path)
     parser.add_argument('--output', type=Path)

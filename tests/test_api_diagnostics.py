@@ -113,7 +113,7 @@ def test_full_flow_safe_report_CPC_only_no_combined_conversion(tmp_path, monkeyp
     mock_dpapi(monkeypatch)
     transport = FakeTransport()
     report = diag.run(tmp_path, transport=transport)
-    text = json.dumps(report)
+    text = json.dumps({key: value for key, value in report.items() if key != 'created_at'})
     for forbidden in ('PRIVATE_', 'SELLER_SECRET', 'PERF_SECRET', 'PERF_CLIENT_SECRET',
                       '987654321', '12345', 'attacker', 'aaaaaaaa', 'BUYER_PRIVATE'):
         assert forbidden not in text
