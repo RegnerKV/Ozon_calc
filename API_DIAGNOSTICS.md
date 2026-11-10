@@ -86,7 +86,9 @@ Seller `ordered_units` означает заказанные товары, не 
 <https://docs.ozon.ru/api/performance/>. 10.11.2026 прямой доступ из облачной
 среды отклонён её прокси. Вместо прямой проверки использованы опубликованные копии:
 
-- `artefactby-ozon-seller-api@0.19.1` из npm; SHA-512 integrity архива проверена.
+- `artefactby-ozon-seller-api@0.21.0` — актуальная npm-версия на момент проверки
+  `latest` 10.11.2026; SHA-512 integrity архива проверена. Контракты выбранных
+  методов сверены с этой версией после первоначального изучения 0.19.1.
   В схеме `ordered_units` доступна всем, для `hits_view`/`hits_tocart` описан
   Premium Plus. Фактический результат конкретного ключа проверяется отдельно.
 - `DragonSigh/ozon-performance-api-docs`, commit
