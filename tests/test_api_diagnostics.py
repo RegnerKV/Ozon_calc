@@ -228,7 +228,7 @@ def test_cli_writes_report_outside_data_dir_and_never_overwrites(tmp_path):
     data = tmp_path / 'data'
     output = tmp_path / 'diagnostics.json'
     assert main(['--offline', '--data-dir', str(data), '--output', str(output)]) == 0
-    report = json.loads(output.read_text())
+    report = json.loads(output.read_text(encoding='utf-8'))
     assert report['execution'] == 'offline_no_API_requests'
     before = output.read_bytes()
     assert main(['--offline', '--data-dir', str(data), '--output', str(output)]) == 2
