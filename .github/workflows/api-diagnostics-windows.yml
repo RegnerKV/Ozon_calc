@@ -9,6 +9,7 @@ on:
       - 'ozon_profit/api_diagnostics.py'
       - 'tests/test_api_diagnostics.py'
       - 'scripts/smoke_diagnostics_windows.py'
+      - 'scripts/summarize_diagnostic_tests.py'
       - '.github/workflows/api-diagnostics-windows.yml'
       - 'API_DIAGNOSTICS.md'
 
