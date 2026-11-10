@@ -1,0 +1,49 @@
+name: Windows API diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['diagnostics/api-capabilities']
+    paths:
+      - 'diagnose_api.py'
+      - 'ozon_profit/api_diagnostics.py'
+      - 'tests/test_api_diagnostics.py'
+      - 'scripts/smoke_diagnostics_windows.py'
+      - '.github/workflows/api-diagnostics-windows.yml'
+      - 'API_DIAGNOSTICS.md'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-dev.txt pyinstaller==6.16.0
+      - run: python -m pip check
+      - run: python -m pytest -q
+      - name: Build standalone diagnostic (no application update)
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onefile --console
+          --name OzonApiDiagnostics --collect-all truststore diagnose_api.py
+      - name: Verify packaged EXE with real Windows DPAPI and an unchanged database
+        run: python scripts/smoke_diagnostics_windows.py
+      - name: Package diagnostic only
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/diagnostics | Out-Null
+          Copy-Item dist/OzonApiDiagnostics.exe dist/diagnostics/
+          Copy-Item API_DIAGNOSTICS.md dist/diagnostics/READ-ME.md
+          Set-Content -Path dist/diagnostics/source-commit.txt -Value '${{ github.sha }}'
+          Get-FileHash dist/diagnostics/OzonApiDiagnostics.exe -Algorithm SHA256 | Format-List | Out-File dist/diagnostics/SHA256.txt
+          Compress-Archive -Path dist/diagnostics/* -DestinationPath dist/OzonApiDiagnostics-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OzonApiDiagnostics-Windows
+          path: dist/OzonApiDiagnostics-Windows.zip
+          retention-days: 30
