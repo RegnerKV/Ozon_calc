@@ -60,7 +60,7 @@ jobs:
           name: OzonApiDiagnostics-Windows
           path: dist/OzonApiDiagnostics-Windows.zip
           retention-days: 30
-  publish-v2:
+  publish-v3:
     needs: diagnostic
     runs-on: ubuntu-latest
     permissions:
@@ -91,19 +91,19 @@ jobs:
         shell: bash
         run: |
           cat > release/notes.md <<'NOTES'
-          Диагностика API v2 для Windows: сохранённые ключи, база только для чтения, без импорта и финансовых расчётов. Python не нужен.
-          Добавлены безопасная диагностика полей кампаний Performance, пробы статистики при неизвестном типе оплаты и ограниченные повторы HTTP 429 с учётом Retry-After. Неизвестный тип оплаты не считается CPC. Суммы и конверсии не вычисляются; ключи, токены, содержимое заказов и финансовых операций в JSON не выгружаются.
+          Диагностика API v3 для Windows: сохранённые ключи, база только для чтения, без импорта и финансовых расчётов. Python не нужен.
+          Полный проход всех найденных подходящих кампаний Performance вместо трёх проб. Проверяются текущий состав и исторические отчёты; отсутствие SKU в текущем составе не исключает его прошлую рекламу. JSON содержит только статистику контрольного товара по дням и безопасные статусы. Неизвестный тип оплаты не считается CPC, заказы разных кампаний и продажи из всех источников не смешиваются. Ключи, токены, содержимое заказов и финансовых операций не выгружаются. При истечении токена выполняется повторная авторизация; ошибки и неполнота отмечаются явно.
           Скачайте ZIP, распакуйте и запустите EXE под прежней учётной записью Windows. Выберите новое имя JSON и дождитесь завершения. Основное приложение не обновляется.
           Публикация выполняется только после тестов, сборки Windows EXE и проверки настоящего DPAPI, безопасного JSON и неизменности тестовой базы/ключей.
           NOTES
-      - name: Publish Windows diagnostic v2
+      - name: Publish Windows diagnostic v3
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: >-
-          gh release create api-diagnostics-v2-2026-11-10
+          gh release create api-diagnostics-v3-2026-11-10
           release/OzonApiDiagnostics-Windows.zip
           release/OzonApiDiagnostics-Windows.zip.sha256
           --target '${{ github.sha }}'
-          --title 'Диагностика API v2 для Windows — 10.11.2026'
+          --title 'Диагностика API v3 для Windows — 10.11.2026'
           --prerelease --notes-file release/notes.md

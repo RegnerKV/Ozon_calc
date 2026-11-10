@@ -16,10 +16,10 @@ def main(argv=None):
     parser.add_argument('--data-dir', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--offline', action='store_true', help='Не обращаться к API')
-    parser.add_argument('--max-campaigns', type=int, default=20)
+    parser.add_argument('--max-campaigns', type=int, default=2000)
     args = parser.parse_args(argv)
-    if not 1 <= args.max_campaigns <= 100:
-        parser.error('--max-campaigns: 1..100')
+    if not 1 <= args.max_campaigns <= 2000:
+        parser.error('--max-campaigns: 1..2000')
     output = args.output
     if output is None and os.name == 'nt':
         from tkinter import Tk, filedialog
@@ -46,6 +46,7 @@ def main(argv=None):
     print('База: только чтение. Импорт и пересчёт не запускаются.', flush=True)
     print('Проверки аналитики выполняются с интервалом 61 секунда; дождитесь завершения.', flush=True)
     print('При HTTP 429 будет до двух повторов с ожиданием. Сообщения об ожидании появятся ниже.', flush=True)
+    print('Полный проход кампаний: текущие товары и исторические отчёты. Это может занять продолжительное время.', flush=True)
     try:
         if os.name == 'nt':
             import truststore

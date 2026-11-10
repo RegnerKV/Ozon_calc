@@ -79,6 +79,9 @@ class FakeTransport:
 
     def request(self, service, method, path, headers, **kwargs):
         self.calls.append((service, method, path, kwargs))
+        if path.endswith('/v2/products'):
+            return {'http_status': 200, 'outcome': 'response_received',
+                    'subscription_requirement': 'not_established'}, {'products': [{'sku': '12345'}]}
         data = {
             '/v3/product/info/list': {'items': [{'offer_id': diag.ARTICLE, 'sku': 12345}]},
             '/v3/posting/fbo/list': {'postings': [{'buyer': 'PRIVATE_BUYER', 'price': 9999}]},
@@ -358,3 +361,68 @@ def test_SKU_filtered_listing_can_find_campaigns_missing_from_default_list(tmp_p
     assert any(call[2] == '/api/client/campaign' and call[3]['params'].get('advObjectType') == 'SKU'
                for call in transport.calls)
     assert report['checks'][-1]['sample']['expense_scope'] == 'CPC_campaign_only'
+
+
+def test_complete_pass_checks_all_28_campaigns_including_removed_target(tmp_path, monkeypatch):
+    fixture_database(tmp_path)
+    mock_dpapi(monkeypatch)
+    class FullTransport(FakeTransport):
+        def request(self, service, method, path, headers, **kwargs):
+            outcome, data = super().request(service, method, path, headers, **kwargs)
+            if path == '/api/client/campaign':
+                data = {'list': [{'id': str(i), 'advObjectType': 'SKU'} for i in range(100, 128)]}
+            elif path.endswith('/v2/products'):
+                data = {'products': []}  # product is no longer in any current campaign
+            elif path == '/api/client/statistics/json':
+                self.current = kwargs['json']['campaigns'][0]
+            elif path == '/api/client/statistics/report':
+                data = {self.current: {'report': {'rows': [] if self.current != '127' else [
+                    {'sku': '12345', 'date': diag.START, 'clicks': '1427', 'toCart': '64',
+                     'expense': '2059', 'orders': None, 'modelOrders': None}]}}}
+            return outcome, data
+    transport = FullTransport()
+    report = diag.run(tmp_path, transport=transport)
+    coverage = report['performance_coverage']
+    assert coverage['eligible_campaigns'] == coverage['reports_attempted'] == coverage['reports_received'] == 28
+    assert coverage['all_eligible_reports_received'] is True
+    assert coverage['current_target_campaigns'] == 0
+    assert coverage['target_reports_observed'] == 1
+    generated = [call[3]['json']['campaigns'][0] for call in transport.calls if call[2] == '/api/client/statistics/json']
+    assert set(generated) == {str(i) for i in range(100, 128)}
+    assert not coverage['cross_campaign_orders_summed']
+    assert '12345' not in json.dumps({key: value for key, value in report.items() if key != 'created_at'})
+
+
+def test_statistics_preserve_missing_attribution_and_reject_duplicate_rows():
+    rows = [{'sku': '123', 'date': diag.START, 'clicks': '2', 'toCart': 0, 'expense': '1,25',
+             'orders': None, 'buyer': 'PRIVATE_BUYER', 'token': 'PRIVATE_TOKEN'}]
+    safe = diag.target_statistics(rows)
+    assert safe['days'][0]['expense'] == '1.25'
+    assert safe['days'][0]['orders'] is None
+    assert safe['days'][0]['toCart'] == '0'
+    assert 'PRIVATE' not in json.dumps(safe)
+    assert diag.target_statistics(rows + rows)['state'] == 'not_aggregated_duplicate_SKU_day_rows'
+
+
+def test_campaign_report_wrong_identity_rejected():
+    assert diag.performance_summary({'111': {'report': {'rows': []}}}, {'123'},
+                                    expected_campaign='222')['schema'] == 'unrecognized'
+
+
+def test_expired_performance_token_is_refreshed_without_exposing_it(tmp_path, monkeypatch):
+    fixture_database(tmp_path)
+    mock_dpapi(monkeypatch)
+    transport = FakeTransport()
+    request = transport.request
+    expired = []
+    def expire_once(service, method, path, headers, **kwargs):
+        outcome, data = request(service, method, path, headers, **kwargs)
+        if path == '/api/client/statistics/report' and not expired:
+            expired.append(True)
+            return {'http_status': 401, 'outcome': 'http_error'}, None
+        return outcome, data
+    transport.request = expire_once
+    report = diag.run(tmp_path, transport=transport)
+    assert any(check['name'] == 'performance_token_refresh' for check in report['checks'])
+    assert report['performance_coverage']['all_eligible_reports_received']
+    assert 'PRIVATE_BEARER_TOKEN' not in json.dumps(report)

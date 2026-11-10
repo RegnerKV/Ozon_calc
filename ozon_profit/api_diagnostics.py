@@ -9,6 +9,7 @@ import re
 import sqlite3
 import time
 from email.utils import parsedate_to_datetime
+from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
 import requests
@@ -99,6 +100,7 @@ class Transport:
         self.session = session or requests.Session()
         self.sleep, self.clock = sleep, clock
         self.last_analytics = None
+        self.last_performance = None
         self.progress = progress
 
     def close(self):
@@ -131,12 +133,18 @@ class Transport:
         elif service == 'performance':
             allowed = (method, path) in PERFORMANCE_PATHS or (
                 method == 'GET' and re.fullmatch(
-                    r'/api/client/statistics/[0-9a-fA-F-]{36}', path))
+                    r'/api/client/statistics/[0-9a-fA-F-]{36}', path)) or (
+                method == 'GET' and re.fullmatch(
+                    r'/api/client/campaign/[1-9][0-9]{0,19}/(?:v2/products|objects)', path))
             base = PERFORMANCE
         else:
             allowed = False
         if not allowed:
             raise ValueError('Method not allowed')
+        if service == 'performance':
+            if self.last_performance is not None:
+                self.sleep(max(0, 1 - (self.clock() - self.last_performance)))
+            self.last_performance = self.clock()
         if path == '/v1/analytics/data':
             if self.last_analytics is not None:
                 self.sleep(max(0, 61 - (self.clock() - self.last_analytics)))
@@ -206,16 +214,21 @@ def retry_delay(value):
 def safe_error_summary(data):
     if not isinstance(data, dict):
         return {'structured_error': False}
-    code = data.get('code')
+    source = data['error'] if isinstance(data.get('error'), dict) else data
+    code = source.get('code', source.get('error_code'))
     known = {'INVALID_ARGUMENT', 'PERMISSION_DENIED', 'UNAUTHENTICATED',
              'NOT_FOUND', 'RESOURCE_EXHAUSTED', 'FAILED_PRECONDITION', 'UNIMPLEMENTED'}
-    message = data.get('message')
-    text = message.casefold() if isinstance(message, str) else ''
+    text = ' '.join(source[key][:4096].casefold() for key in ('message', 'error', 'description')
+                    if isinstance(source.get(key), str))
     return {'structured_error': True,
             'code': code if (isinstance(code, str) and code in known) or (
                 type(code) is int and 0 <= code <= 16) else 'not_exported',
             'text_mentions_subscription': any(word in text for word in ('premium', 'подписк')),
             'text_mentions_metric': any(word in text for word in ('metric', 'метрик')),
+            'text_mentions_campaign': any(word in text for word in ('campaign', 'кампан')),
+            'text_mentions_date_or_period': any(word in text for word in ('date', 'period', 'дат', 'период')),
+            'text_mentions_no_data': any(word in text for word in ('no data', 'нет данных', 'no statistics')),
+            'text_mentions_unsupported': any(word in text for word in ('unsupported', 'not supported', 'не поддерж')),
             'subscription_requirement': 'not_established'}
 
 
@@ -263,14 +276,17 @@ def analytics_summary(data, sku, metric):
             'scope': 'one_resolved_sku_first_page'}
 
 
-def performance_summary(data, skus, payment_scope='CPC_campaign_only'):
+def performance_summary(data, skus, payment_scope='CPC_campaign_only', include_metrics=False,
+                        expected_campaign=None):
     """Accept documented report containers; unknown schema is never zero statistics."""
     # JSON reports can be a campaign-id map of {report: {rows: [...]}}.
     groups = data
-    if isinstance(groups, dict) and 'rows' in groups:
+    if isinstance(groups, dict) and ('rows' in groups or isinstance(groups.get('report'), dict)):
         groups = [groups]
     elif isinstance(groups, dict) and groups and all(
             re.fullmatch(r'[0-9]+', str(k)) for k in groups):
+        if expected_campaign is not None and set(groups) != {expected_campaign}:
+            return {'schema': 'unrecognized', 'reason': 'campaign_not_matching_request'}
         groups = list(groups.values())
     else:
         return {'schema': 'unrecognized'}
@@ -305,20 +321,61 @@ def performance_summary(data, skus, payment_scope='CPC_campaign_only'):
     fields = {name: {'present_rows': sum(name in row for row in selected),
                      'numeric_rows': sum(numeric(row.get(name)) for row in selected)}
               for name in ('views', 'clicks', 'toCart', 'expense', 'orders', 'modelOrders')}
-    return {'schema': 'recognized', 'target_rows': len(selected),
+    result = {'schema': 'recognized', 'target_rows': len(selected),
             'target_presence': ('observed' if selected else 'not_observed_not_zero'),
             'sku_day_granularity': 'verified_for_target' if selected else 'not_verified_for_target',
             'target_days_observed': len(days), 'fields': fields,
             'expense_scope': payment_scope,
             'orders_scope': 'Performance_attribution_not_all_source_sales',
             'totals_computed': False}
+    if include_metrics:
+        result['target_daily_statistics'] = target_statistics(selected)
+        result['statistics_scope'] = 'one_campaign_target_SKUs_only_no_cross_campaign_order_sum'
+    return result
+
+
+def target_statistics(rows):
+    """Only the selected product's advertising statistics; no order/ledger records."""
+    days, seen = {}, set()
+    for row in rows:
+        raw = row['date']
+        try:
+            day = date.fromisoformat(raw).isoformat()
+        except ValueError:
+            day = datetime.strptime(raw, '%d.%m.%Y').date().isoformat()
+        identity = (str(row['sku']), day)
+        if identity in seen:
+            return {'state': 'not_aggregated_duplicate_SKU_day_rows'}
+        seen.add(identity)
+        daily = days.setdefault(day, {key: Decimal(0) for key in
+            ('clicks', 'toCart', 'expense', 'orders', 'modelOrders')})
+        for key in daily:
+            if daily[key] is None:
+                continue
+            raw_value = row.get(key)
+            try:
+                if raw_value is None or isinstance(raw_value, bool):
+                    raise ValueError()
+                value = Decimal(str(raw_value).replace(' ', '').replace('\u00a0', '').replace(',', '.'))
+                if not value.is_finite() or value < 0 or (key != 'expense' and value != value.to_integral_value()):
+                    raise ValueError()
+                daily[key] += value
+            except (ValueError, InvalidOperation):
+                daily[key] = None
+    return {'state': 'parsed', 'days': [
+        {'day': day, **{key: str(value) if value is not None else None
+                       for key, value in fields.items()}}
+        for day, fields in sorted(days.items())],
+        'expense_label': 'expense_as_reported_payment_scope_is_separate',
+        'orders_label': 'Performance_attribution_not_all_source_realized_units',
+        'cross_campaign_orders_summed': False, 'conversion_computed': False}
 
 
 def run(directory=None, *, transport=None, offline=False, progress=lambda message: None,
-        max_campaigns=20):
+        max_campaigns=2000):
     pairs, states, skus = read_connections(directory or default_data_directory())
     report = {
-        'schema_version': 2, 'tool': 'OzonApiDiagnostics',
+        'schema_version': 3, 'tool': 'OzonApiDiagnostics',
         'created_at': datetime.now(timezone.utc).isoformat(),
         'period': {'from': START, 'to': END, 'timezone': 'Europe/Moscow'},
         'control_article': ARTICLE, 'connections': states,
@@ -342,9 +399,22 @@ def run(directory=None, *, transport=None, offline=False, progress=lambda messag
     def probe(name, service, method, path, headers, **kwargs):
         progress(name)
         outcome, data = transport.request(service, method, path, headers, **kwargs)
+        if (service == 'performance' and outcome['http_status'] == 401 and
+                'Authorization' in headers and pairs['performance']):
+            refreshed, token_data = transport.request('performance', 'POST', '/api/client/token', {},
+                json={'client_id': pairs['performance'][0], 'client_secret': pairs['performance'][1],
+                      'grant_type': 'client_credentials'})
+            checks.append({'name': 'performance_token_refresh', 'service': 'performance',
+                           'method': 'POST', 'endpoint': '/api/client/token', **refreshed})
+            new_token = token_data.get('access_token') if isinstance(token_data, dict) else None
+            if isinstance(new_token, str) and new_token and not any(c.isspace() for c in new_token):
+                headers['Authorization'] = 'Bearer ' + new_token
+                outcome, data = transport.request(service, method, path, headers, **kwargs)
+                outcome['after_token_refresh'] = True
         entry = {'name': name, 'service': service, 'method': method,
                  # No UUIDs, request payloads or query parameters in the report.
-                 'endpoint': ('/api/client/statistics/{UUID}' if re.fullmatch(
+                 'endpoint': re.sub(r'/campaign/[0-9]+/', '/campaign/{campaignId}/',
+                     '/api/client/statistics/{UUID}' if re.fullmatch(
                      r'/api/client/statistics/[0-9a-fA-F-]{36}', path) else path), **outcome}
         checks.append(entry)
         return entry, data
@@ -419,7 +489,8 @@ def run(directory=None, *, transport=None, offline=False, progress=lambda messag
             token = data.get('access_token') if isinstance(data, dict) else None
             if isinstance(token, str) and token and not any(c.isspace() for c in token):
                 headers = {'Authorization': 'Bearer ' + token}
-                _performance_checks(probe, transport, headers, skus, max_campaigns)
+                report['performance_coverage'] = _performance_checks(
+                    probe, transport, headers, skus, max_campaigns)
             else:
                 checks.append({'name': 'performance_statistics', 'outcome': 'not_run_no_token'})
         else:
@@ -432,7 +503,12 @@ def run(directory=None, *, transport=None, offline=False, progress=lambda messag
 
 
 def _performance_checks(probe, transport, headers, skus, max_campaigns):
-    campaigns, unclassified = set(), set()
+    campaigns, unclassified, excluded = set(), set(), set()
+    coverage = {'campaign_listing_complete': False, 'eligible_campaigns': 0,
+                'reports_attempted': 0, 'reports_received': 0, 'target_reports_observed': 0,
+                'all_eligible_reports_received': False,
+                'current_membership_is_not_historical_proof': True,
+                'cross_campaign_orders_summed': False, 'conversion_computed': False}
     field_counts = {key: {} for key in ('paymentType', 'payment_type', 'advObjectType', 'adv_object_type')}
     complete = True
     for object_filter in (None, "SKU"):
@@ -472,11 +548,14 @@ def _performance_checks(probe, transport, headers, skus, max_campaigns):
                     campaigns.add(identifier)
                 elif classification == 'unverified':
                     unclassified.add(identifier)
+                else:
+                    excluded.add(identifier)
             if len(data['list']) < 100:
                 query_complete = True
                 break
         complete = complete and query_complete
-    campaigns = sorted(campaigns)
+    campaigns = sorted(campaigns - excluded)
+    unclassified -= excluded
     entry['campaign_field_categories'] = field_counts
     entry['field_count_scope'] = 'response_rows_can_repeat_between_default_and_SKU_queries'
     entry['CPC_campaigns_found'] = len(campaigns)
@@ -486,26 +565,40 @@ def _performance_checks(probe, transport, headers, skus, max_campaigns):
     # Probe unknown formats without labelling their expenses as CPC.
     candidates = [(identifier, 'CPC_campaign_only') for identifier in campaigns]
     candidates += [(identifier, 'payment_type_unverified_no_CPC_totals')
-                   for identifier in sorted(unclassified - set(campaigns))[:3]]
+                   for identifier in sorted(unclassified - set(campaigns))]
     entry['selected_report_samples'] = min(len(candidates), max_campaigns)
-    entry['report_samples_limited'] = len(candidates) > max_campaigns or len(unclassified) > 3
+    entry['report_samples_limited'] = len(candidates) > max_campaigns
+    coverage['eligible_campaigns'] = len(candidates)
+    coverage['excluded_non_click_or_conflicting_campaigns'] = len(excluded)
+    coverage['campaign_listing_complete'] = complete
+    coverage['campaign_limit_applied'] = len(candidates) > max_campaigns
+    # Inspect current membership for prioritization, never to exclude historical ads.
+    selected = candidates[:max_campaigns]
+    ordered = []
+    for index, (campaign, scope) in enumerate(selected, 1):
+        membership = current_campaign_membership(probe, campaign, headers, skus, index, len(selected))
+        ordered.append((campaign, scope, membership))
+    ordered.sort(key=lambda item: item[2] != 'target_present')
+    coverage['current_target_campaigns'] = sum(item[2] == 'target_present' for item in ordered)
     if not candidates:
         entry['statistics_probe'] = 'not_run_no_CPC_campaigns_found_not_proof_of_no_historical_spend'
     if not skus:
         entry['target_validation'] = 'SKU_unresolved_no_product_attribution'
     # One campaign at a time respects the published one-export/account limit.
-    for campaign, scope in candidates[:max_campaigns]:
+    for index, (campaign, scope, membership) in enumerate(ordered, 1):
         prefix = 'CPC' if scope == 'CPC_campaign_only' else 'unclassified_payment'
-        entry, data = probe(prefix + '_SKU_day_generate', 'performance', 'POST',
+        entry, data = probe(prefix + '_SKU_day_generate_' + str(index) + '_of_' + str(len(ordered)), 'performance', 'POST',
             '/api/client/statistics/json', headers,
             json={'campaigns': [campaign], 'dateFrom': START, 'dateTo': END, 'groupBy': 'DATE'})
         entry['payment_scope'] = scope
+        entry['current_membership'] = membership
+        coverage['reports_attempted'] += 1
         try:
             identifier = str(UUID(data['UUID']))
         except (TypeError, KeyError, ValueError, AttributeError):
             entry['report_generation'] = 'UUID_not_received'
             continue
-        for attempt in range(12):
+        for attempt in range(120):
             transport.sleep(5)
             entry, status = probe(prefix + '_report_status', 'performance', 'GET',
                 '/api/client/statistics/' + identifier, headers)
@@ -515,13 +608,57 @@ def _performance_checks(probe, transport, headers, skus, max_campaigns):
             if state == 'OK':
                 entry, data = probe(prefix + '_SKU_day_report', 'performance', 'GET',
                     '/api/client/statistics/report', headers, params={'UUID': identifier})
-                entry['sample'] = performance_summary(data, skus, scope)
+                entry['sample'] = performance_summary(data, skus, scope, include_metrics=True,
+                                                      expected_campaign=campaign)
+                if entry['sample']['schema'] == 'recognized':
+                    coverage['reports_received'] += 1
+                    coverage['target_reports_observed'] += entry['sample']['target_rows'] > 0
+                break
+            if state == 'ERROR':
                 break
             if state not in ('NOT_STARTED', 'IN_PROGRESS'):
-                return
+                coverage['stop_reason'] = 'report_state_unknown_no_overlapping_exports'
+                return coverage
         else:
             entry['outcome'] = 'pending_not_failed_no_more_exports_started'
-            return
+            coverage['stop_reason'] = 'report_pending_after_bounded_wait_no_overlapping_exports'
+            return coverage
+    coverage['all_eligible_reports_received'] = bool(candidates) and (
+        complete and len(candidates) <= max_campaigns and
+        coverage['reports_received'] == len(candidates))
+    return coverage
+
+
+def current_campaign_membership(probe, campaign, headers, skus, index, total):
+    found, complete = False, False
+    valid = True
+    for page in range(1, 21):
+        entry, data = probe('performance_current_products_' + str(index) + '_of_' + str(total),
+            'performance', 'GET', '/api/client/campaign/' + campaign + '/v2/products', headers,
+            params={'page': page, 'pageSize': 100})
+        entry['sample'] = list_summary(data, 'products')
+        if entry['sample']['schema'] != 'recognized':
+            break
+        batch = data['products']
+        valid = valid and all(re.fullmatch(r'[1-9][0-9]{0,19}', str(row.get('sku'))) for row in batch)
+        found = found or any(str(row.get('sku')) in skus for row in batch)
+        entry['target_present'] = found
+        if len(batch) < 100:
+            complete = valid
+            break
+    if not complete and not found:
+        entry, data = probe('performance_current_objects_' + str(index) + '_of_' + str(total),
+            'performance', 'GET', '/api/client/campaign/' + campaign + '/objects', headers)
+        entry['sample'] = list_summary(data, 'list')
+        if entry['sample']['schema'] == 'recognized':
+            batch = data['list']
+            complete = all(re.fullmatch(r'[1-9][0-9]{0,19}', str(row.get('id'))) for row in batch)
+            found = any(str(row.get('id')) in skus for row in batch)
+            entry['target_present'] = found
+    state = 'target_present' if found else 'not_currently_listed' if complete else 'unknown'
+    entry['current_membership'] = state
+    entry['does_not_exclude_historical_membership'] = True
+    return state
 
 
 def campaign_payment(row):
