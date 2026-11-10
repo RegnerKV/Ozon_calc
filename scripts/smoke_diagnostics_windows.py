@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -16,6 +17,11 @@ from ozon_profit.api_diagnostics import ARTICLE
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def fail(message):
+    print('::error title=Packaged diagnostic smoke::' + message, flush=True)
+    raise AssertionError(message)
 
 
 def main():
@@ -41,13 +47,21 @@ def main():
         report_path = root / 'report.json'
         result = subprocess.run([str(exe), '--offline', '--data-dir', str(data),
                                  '--output', str(report_path)], capture_output=True, timeout=90)
-        assert result.returncode == 0, 'Packaged diagnostic failed (raw output intentionally omitted)'
+        if result.returncode != 0:
+            # Fixed categories/module identifiers only, never raw output or secrets.
+            text = (result.stdout + result.stderr).decode('utf-8', errors='replace')
+            category = re.findall(r'Error category: ([A-Za-z]+)', text)
+            missing = re.findall(r"ModuleNotFoundError: No module named '([A-Za-z_][A-Za-z_0-9.]*)'", text)
+            fail('EXE exit=' + str(result.returncode) + '; categories=' + ','.join(category)
+                 + '; missing_modules=' + ','.join(missing))
         report = json.loads(report_path.read_text(encoding='utf-8'))
         assert report['execution'] == 'offline_no_API_requests'
-        assert report['connections'] == {'seller': 'loaded', 'performance': 'loaded',
-                                         'database': 'opened_read_only'}
+        if report['connections'] != {'seller': 'loaded', 'performance': 'loaded',
+                                      'database': 'opened_read_only'}:
+            fail('Connection states: ' + json.dumps(report['connections']))
         assert report['checks'] == []
-        assert {p.name: digest(p) for p in data.iterdir()} == before
+        if {p.name: digest(p) for p in data.iterdir()} != before:
+            fail('Database or credential files changed')
         exported = report_path.read_bytes() + result.stdout + result.stderr
         for secret in (b'synthetic-seller-secret', b'synthetic-client',
                        b'synthetic-performance-secret', b'private-buyer', b'123456'):

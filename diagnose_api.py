@@ -59,9 +59,13 @@ def main(argv=None):
     except FileExistsError:
         print('Файл уже существует. Выберите новое имя отчёта.')
         return 2
-    except Exception:
+    except Exception as exc:
         # No exception text: libraries may include headers, credentials or data.
         print('Диагностика не завершена. Подробности исключения скрыты для защиты данных.')
+        known_errors = {'ImportError', 'ModuleNotFoundError', 'OSError', 'PermissionError',
+                        'FileNotFoundError', 'ValueError', 'TypeError', 'RuntimeError',
+                        'UnicodeEncodeError', 'UnicodeDecodeError', 'AttributeError'}
+        print('Error category: ' + (type(exc).__name__ if type(exc).__name__ in known_errors else 'other'))
         return 1
 
 
