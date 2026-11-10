@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+from email.utils import parsedate_to_datetime
 from uuid import UUID
 
 import requests
@@ -94,15 +95,36 @@ def read_connections(directory):
 
 class Transport:
     """Fixed hosts/methods only; error text, headers and response values never exported."""
-    def __init__(self, session=None, sleep=time.sleep, clock=time.monotonic):
+    def __init__(self, session=None, sleep=time.sleep, clock=time.monotonic, progress=lambda message: None):
         self.session = session or requests.Session()
         self.sleep, self.clock = sleep, clock
         self.last_analytics = None
+        self.progress = progress
 
     def close(self):
         self.session.close()
 
     def request(self, service, method, path, headers, **kwargs):
+        history, waits = [], []
+        for attempt in range(3):
+            result, data = self._request_once(service, method, path, headers, **kwargs)
+            history.append(result['http_status'])
+            if result['http_status'] != 429 or attempt == 2:
+                break
+            delay = max(61, result.get('retry_after_seconds', 61))
+            if delay > 300:
+                result['retry_deferred'] = True
+                break
+            waits.append(delay)
+            self.progress('HTTP_429_wait_' + str(delay) + 's_retry_' + str(attempt + 1))
+            self.sleep(delay)
+        result['attempts'] = len(history)
+        result['http_status_history'] = history
+        if waits:
+            result['retry_wait_seconds'] = waits
+        return result, data
+
+    def _request_once(self, service, method, path, headers, **kwargs):
         if service == 'seller':
             allowed = method == 'POST' and path in SELLER_PATHS
             base = SELLER
@@ -129,6 +151,21 @@ class Transport:
                 if not 200 <= response.status_code < 300:
                     result['outcome'] = ('rate_limited' if response.status_code == 429
                                          else 'http_error')
+                    if response.status_code == 429:
+                        result['retry_after_seconds'] = retry_delay(
+                            getattr(response, 'headers', {}).get('Retry-After'))
+                    elif response.status_code in (400, 403, 404):
+                        # Fixed flags/codes only. Error messages may echo private data.
+                        body = bytearray()
+                        for chunk in response.iter_content(4096):
+                            body.extend(chunk)
+                            if len(body) > 65536:
+                                break
+                        if len(body) <= 65536:
+                            try:
+                                result['provider_error'] = safe_error_summary(json.loads(body))
+                            except (ValueError, UnicodeError):
+                                pass
                     return result, None
                 # Bound even chunked responses; do not save downloaded data to disk.
                 chunks, size = [], 0
@@ -150,6 +187,36 @@ class Transport:
         except (ValueError, UnicodeError):
             result['outcome'] = 'invalid_json'
         return result, None
+
+
+def retry_delay(value):
+    try:
+        if value is not None and str(value).strip().isdigit():
+            return min(int(value), 86400)
+        if value:
+            stamp = parsedate_to_datetime(value)
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            return max(0, min(86400, math.ceil((stamp - datetime.now(timezone.utc)).total_seconds())))
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return 61
+
+
+def safe_error_summary(data):
+    if not isinstance(data, dict):
+        return {'structured_error': False}
+    code = data.get('code')
+    known = {'INVALID_ARGUMENT', 'PERMISSION_DENIED', 'UNAUTHENTICATED',
+             'NOT_FOUND', 'RESOURCE_EXHAUSTED', 'FAILED_PRECONDITION', 'UNIMPLEMENTED'}
+    message = data.get('message')
+    text = message.casefold() if isinstance(message, str) else ''
+    return {'structured_error': True,
+            'code': code if (isinstance(code, str) and code in known) or (
+                type(code) is int and 0 <= code <= 16) else 'not_exported',
+            'text_mentions_subscription': any(word in text for word in ('premium', 'подписк')),
+            'text_mentions_metric': any(word in text for word in ('metric', 'метрик')),
+            'subscription_requirement': 'not_established'}
 
 
 def numeric(value):
@@ -196,7 +263,7 @@ def analytics_summary(data, sku, metric):
             'scope': 'one_resolved_sku_first_page'}
 
 
-def performance_summary(data, skus):
+def performance_summary(data, skus, payment_scope='CPC_campaign_only'):
     """Accept documented report containers; unknown schema is never zero statistics."""
     # JSON reports can be a campaign-id map of {report: {rows: [...]}}.
     groups = data
@@ -225,7 +292,10 @@ def performance_summary(data, skus):
             continue
         raw_day = row.get('date')
         try:
-            day = date.fromisoformat(raw_day).isoformat()
+            try:
+                day = date.fromisoformat(raw_day).isoformat()
+            except (TypeError, ValueError):
+                day = datetime.strptime(raw_day, '%d.%m.%Y').date().isoformat()
             if not START <= day <= END:
                 raise ValueError()
         except (ValueError, TypeError):
@@ -239,7 +309,7 @@ def performance_summary(data, skus):
             'target_presence': ('observed' if selected else 'not_observed_not_zero'),
             'sku_day_granularity': 'verified_for_target' if selected else 'not_verified_for_target',
             'target_days_observed': len(days), 'fields': fields,
-            'expense_scope': 'CPC_campaign_only',
+            'expense_scope': payment_scope,
             'orders_scope': 'Performance_attribution_not_all_source_sales',
             'totals_computed': False}
 
@@ -248,7 +318,7 @@ def run(directory=None, *, transport=None, offline=False, progress=lambda messag
         max_campaigns=20):
     pairs, states, skus = read_connections(directory or default_data_directory())
     report = {
-        'schema_version': 1, 'tool': 'OzonApiDiagnostics',
+        'schema_version': 2, 'tool': 'OzonApiDiagnostics',
         'created_at': datetime.now(timezone.utc).isoformat(),
         'period': {'from': START, 'to': END, 'timezone': 'Europe/Moscow'},
         'control_article': ARTICLE, 'connections': states,
@@ -266,7 +336,7 @@ def run(directory=None, *, transport=None, offline=False, progress=lambda messag
     if offline:
         report['execution'] = 'offline_no_API_requests'
         return report
-    transport = transport or Transport()
+    transport = transport or Transport(progress=progress)
     checks = report['checks']
 
     def probe(name, service, method, path, headers, **kwargs):
@@ -362,34 +432,74 @@ def run(directory=None, *, transport=None, offline=False, progress=lambda messag
 
 
 def _performance_checks(probe, transport, headers, skus, max_campaigns):
-    campaigns = []
-    complete = False
-    for page in range(1, 21):
-        entry, data = probe('performance_campaigns', 'performance', 'GET',
-            '/api/client/campaign', headers, params={'page': page, 'pageSize': 100})
-        entry['sample'] = list_summary(data, 'list')
-        if entry['sample']['schema'] != 'recognized':
-            return
-        for row in data['list']:
-            if (row.get('paymentType') == 'CPC' and
-                    re.fullmatch(r'[1-9][0-9]{0,19}', str(row.get('id')))):
-                campaigns.append(str(row['id']))
-        if len(data['list']) < 100:
-            complete = True
+    campaigns, unclassified = set(), set()
+    field_counts = {key: {} for key in ('paymentType', 'payment_type', 'advObjectType', 'adv_object_type')}
+    complete = True
+    for object_filter in (None, "SKU"):
+        if object_filter and campaigns:
             break
-    campaigns = sorted(set(campaigns))
+        query_complete = False
+        for page in range(1, 21):
+            params = {'page': page, 'pageSize': 100}
+            if object_filter:
+                params['advObjectType'] = object_filter
+            entry, data = probe('performance_campaigns', 'performance', 'GET',
+                '/api/client/campaign', headers, params=params)
+            entry['requested_object_type'] = object_filter or 'default'
+            entry['sample'] = list_summary(data, 'list')
+            if entry['sample']['schema'] != 'recognized':
+                break
+            for row in data['list']:
+                for key, counts in field_counts.items():
+                    value = row.get(key)
+                    if key not in row:
+                        label = 'missing'
+                    elif value is None:
+                        label = 'null'
+                    elif isinstance(value, str):
+                        label = value.strip().upper()
+                        if label not in {'CPC', 'CPO', 'CPM', 'SKU', 'BANNER', 'SEARCH_PROMO',
+                                         'CAMPAIGN_TYPE_INVALID', 'CAMPAIGN_TYPE_UNKNOWN'}:
+                            label = 'other_string_not_exported'
+                    else:
+                        label = 'non_string_not_interpreted'
+                    counts[label] = counts.get(label, 0) + 1
+                identifier = str(row.get('id'))
+                if not re.fullmatch(r'[1-9][0-9]{0,19}', identifier):
+                    continue
+                classification = campaign_payment(row)
+                if classification == 'CPC':
+                    campaigns.add(identifier)
+                elif classification == 'unverified':
+                    unclassified.add(identifier)
+            if len(data['list']) < 100:
+                query_complete = True
+                break
+        complete = complete and query_complete
+    campaigns = sorted(campaigns)
+    entry['campaign_field_categories'] = field_counts
+    entry['field_count_scope'] = 'response_rows_can_repeat_between_default_and_SKU_queries'
     entry['CPC_campaigns_found'] = len(campaigns)
     entry['campaign_listing_complete'] = complete
     entry['campaign_reports_limited'] = len(campaigns) > max_campaigns
-    if not campaigns:
+    entry['unclassified_campaigns_found'] = len(unclassified)
+    # Probe unknown formats without labelling their expenses as CPC.
+    candidates = [(identifier, 'CPC_campaign_only') for identifier in campaigns]
+    candidates += [(identifier, 'payment_type_unverified_no_CPC_totals')
+                   for identifier in sorted(unclassified - set(campaigns))[:3]]
+    entry['selected_report_samples'] = min(len(candidates), max_campaigns)
+    entry['report_samples_limited'] = len(candidates) > max_campaigns or len(unclassified) > 3
+    if not candidates:
         entry['statistics_probe'] = 'not_run_no_CPC_campaigns_found_not_proof_of_no_historical_spend'
     if not skus:
         entry['target_validation'] = 'SKU_unresolved_no_product_attribution'
     # One campaign at a time respects the published one-export/account limit.
-    for campaign in campaigns[:max_campaigns]:
-        entry, data = probe('CPC_SKU_day_generate', 'performance', 'POST',
+    for campaign, scope in candidates[:max_campaigns]:
+        prefix = 'CPC' if scope == 'CPC_campaign_only' else 'unclassified_payment'
+        entry, data = probe(prefix + '_SKU_day_generate', 'performance', 'POST',
             '/api/client/statistics/json', headers,
             json={'campaigns': [campaign], 'dateFrom': START, 'dateTo': END, 'groupBy': 'DATE'})
+        entry['payment_scope'] = scope
         try:
             identifier = str(UUID(data['UUID']))
         except (TypeError, KeyError, ValueError, AttributeError):
@@ -397,18 +507,31 @@ def _performance_checks(probe, transport, headers, skus, max_campaigns):
             continue
         for attempt in range(12):
             transport.sleep(5)
-            entry, status = probe('CPC_report_status', 'performance', 'GET',
+            entry, status = probe(prefix + '_report_status', 'performance', 'GET',
                 '/api/client/statistics/' + identifier, headers)
             state = status.get('state') if isinstance(status, dict) else None
             entry['report_state'] = state if state in (
                 'OK', 'ERROR', 'NOT_STARTED', 'IN_PROGRESS') else 'unknown'
             if state == 'OK':
-                entry, data = probe('CPC_SKU_day_report', 'performance', 'GET',
+                entry, data = probe(prefix + '_SKU_day_report', 'performance', 'GET',
                     '/api/client/statistics/report', headers, params={'UUID': identifier})
-                entry['sample'] = performance_summary(data, skus)
+                entry['sample'] = performance_summary(data, skus, scope)
                 break
             if state not in ('NOT_STARTED', 'IN_PROGRESS'):
                 return
         else:
             entry['outcome'] = 'pending_not_failed_no_more_exports_started'
             return
+
+
+def campaign_payment(row):
+    payments = {row[key].strip().upper() for key in ('paymentType', 'payment_type')
+                if isinstance(row.get(key), str)}
+    objects = {row[key].strip().upper() for key in ('advObjectType', 'adv_object_type')
+               if isinstance(row.get(key), str)}
+    # Conflicts and explicit non-click formats are never treated as CPC.
+    if payments.intersection({'CPO', 'CPM'}) or objects.intersection({'SEARCH_PROMO', 'BANNER'}):
+        return 'excluded_non_CPC_or_conflict'
+    if payments == {'CPC'}:
+        return 'CPC'
+    return 'unverified'

@@ -60,3 +60,50 @@ jobs:
           name: OzonApiDiagnostics-Windows
           path: dist/OzonApiDiagnostics-Windows.zip
           retention-days: 30
+  publish-v2:
+    needs: diagnostic
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: OzonApiDiagnostics-Windows
+          path: release
+      - name: Verify archive and source before publication
+        shell: python
+        env:
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          import hashlib, os, re, zipfile
+          from pathlib import Path
+          path = Path('release/OzonApiDiagnostics-Windows.zip')
+          with zipfile.ZipFile(path) as archive:
+              assert archive.testzip() is None
+              assert archive.read('source-commit.txt').decode('utf-8-sig').strip() == os.environ['BUILD_SHA']
+              executable = archive.read('OzonApiDiagnostics.exe')
+              assert executable.startswith(b'MZ')
+              digest = hashlib.sha256(executable).hexdigest()
+              assert re.search(digest, archive.read('SHA256.txt').decode('utf-8-sig'), re.I)
+          Path(str(path) + '.sha256').write_text(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name + '\n', encoding='ascii')
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          cat > release/notes.md <<'NOTES'
+          Диагностика API v2 для Windows: сохранённые ключи, база только для чтения, без импорта и финансовых расчётов. Python не нужен.
+          Добавлены безопасная диагностика полей кампаний Performance, пробы статистики при неизвестном типе оплаты и ограниченные повторы HTTP 429 с учётом Retry-After. Неизвестный тип оплаты не считается CPC. Суммы и конверсии не вычисляются; ключи, токены, содержимое заказов и финансовых операций в JSON не выгружаются.
+          Скачайте ZIP, распакуйте и запустите EXE под прежней учётной записью Windows. Выберите новое имя JSON и дождитесь завершения. Основное приложение не обновляется.
+          Публикация выполняется только после тестов, сборки Windows EXE и проверки настоящего DPAPI, безопасного JSON и неизменности тестовой базы/ключей.
+          NOTES
+      - name: Publish Windows diagnostic v2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh release create api-diagnostics-v2-2026-11-10
+          release/OzonApiDiagnostics-Windows.zip
+          release/OzonApiDiagnostics-Windows.zip.sha256
+          --target '${{ github.sha }}'
+          --title 'Диагностика API v2 для Windows — 10.11.2026'
+          --prerelease --notes-file release/notes.md

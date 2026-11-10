@@ -158,7 +158,7 @@ class Session:
 @pytest.mark.parametrize('status', [400, 401, 403, 404, 429, 500, 302])
 def test_HTTP_errors_never_prove_subscription_or_export_error_body(status):
     session = Session(Response(status, b'{"message":"Premium Plus PRIVATE_KEY BUYER"}'))
-    outcome, data = diag.Transport(session).request('seller', 'POST',
+    outcome, data = diag.Transport(session, sleep=lambda delay: None).request('seller', 'POST',
         '/v1/analytics/data', {'Api-Key': 'PRIVATE_KEY'}, json={})
     assert data is None
     assert outcome['http_status'] == status
@@ -248,3 +248,113 @@ def test_real_windows_saved_connections(tmp_path):
     pairs, states, _ = diag.read_connections(tmp_path)
     assert states['seller'] == states['performance'] == 'loaded'
     assert pairs['performance'] == ('synthetic-client', 'synthetic-secret')
+
+
+def test_rate_limit_recovery_honors_retry_after_and_preserves_history():
+    limited = Response(429)
+    limited.headers = {'Retry-After': '90'}
+    class Recovering(Session):
+        def request(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return limited if len(self.calls) == 1 else Response(200, b'{"items":[]}')
+    session = Recovering(None)
+    waits, progress = [], []
+    outcome, data = diag.Transport(session, sleep=waits.append, progress=progress.append).request(
+        'seller', 'POST', '/v1/analytics/stocks', {})
+    assert data == {'items': []}
+    assert outcome['http_status_history'] == [429, 200]
+    assert outcome['attempts'] == 2 and waits == [90]
+    assert progress == ['HTTP_429_wait_90s_retry_1']
+
+
+def test_long_retry_after_is_deferred_instead_of_ignored():
+    response = Response(429)
+    response.headers = {'Retry-After': '600'}
+    session = Session(response)
+    waits = []
+    outcome, _ = diag.Transport(session, sleep=waits.append).request(
+        'seller', 'POST', '/v1/analytics/stocks', {})
+    assert outcome['retry_deferred'] is True
+    assert len(session.calls) == 1 and waits == []
+
+
+def test_error_evidence_has_no_free_text_or_subscription_inference():
+    data = {'code': 'INVALID_ARGUMENT', 'message': 'Premium Plus metric PRIVATE_KEY PRIVATE_BUYER'}
+    safe = diag.safe_error_summary(data)
+    assert safe['code'] == 'INVALID_ARGUMENT'
+    assert safe['text_mentions_subscription'] and safe['text_mentions_metric']
+    assert safe['subscription_requirement'] == 'not_established'
+    assert 'PRIVATE' not in json.dumps(safe)
+
+
+@pytest.mark.parametrize('row,expected', [
+    ({'payment_type': 'cpc'}, 'CPC'),
+    ({'paymentType': 'CPC', 'payment_type': 'CPO'}, 'excluded_non_CPC_or_conflict'),
+    ({'advObjectType': 'SEARCH_PROMO'}, 'excluded_non_CPC_or_conflict'),
+    ({'paymentType': 'CPM'}, 'excluded_non_CPC_or_conflict'),
+    ({'advObjectType': 'SKU'}, 'unverified'), ({}, 'unverified'),
+    ({'paymentType': 1}, 'unverified')])
+def test_campaign_classification_never_guesses_click_payment(row, expected):
+    assert diag.campaign_payment(row) == expected
+
+
+def test_missing_payment_type_still_probes_statistics_without_claiming_CPC(tmp_path, monkeypatch):
+    fixture_database(tmp_path)
+    mock_dpapi(monkeypatch)
+    transport = FakeTransport()
+    request = transport.request
+    def missing_payment(service, method, path, headers, **kwargs):
+        outcome, data = request(service, method, path, headers, **kwargs)
+        if path == '/api/client/campaign':
+            data = {'list': [{'id': '111', 'advObjectType': 'SKU', 'title': 'PRIVATE_CAMPAIGN'},
+                             {'id': '222', 'advObjectType': 'SEARCH_PROMO'}]}
+        return outcome, data
+    transport.request = missing_payment
+    report = diag.run(tmp_path, transport=transport)
+    listing = [check for check in report['checks'] if check['name'] == 'performance_campaigns'][-1]
+    assert listing['CPC_campaigns_found'] == 0
+    assert listing['campaign_field_categories']['paymentType'] == {'missing': 4}
+    assert listing['unclassified_campaigns_found'] == 1
+    assert report['checks'][-1]['sample']['expense_scope'] == 'payment_type_unverified_no_CPC_totals'
+    assert not report['checks'][-1]['sample']['totals_computed']
+    assert 'PRIVATE_CAMPAIGN' not in json.dumps(report)
+
+
+def test_unknown_campaign_strings_never_exported(tmp_path, monkeypatch):
+    fixture_database(tmp_path)
+    mock_dpapi(monkeypatch)
+    transport = FakeTransport()
+    request = transport.request
+    def unknown(service, method, path, headers, **kwargs):
+        outcome, data = request(service, method, path, headers, **kwargs)
+        if path == '/api/client/campaign':
+            data = {'list': [{'id': '111', 'paymentType': 'PRIVATE_TOKEN',
+                              'advObjectType': {'private': 'PRIVATE_BUYER'}}]}
+        return outcome, data
+    transport.request = unknown
+    report = diag.run(tmp_path, transport=transport)
+    assert 'PRIVATE' not in json.dumps(report)
+
+
+def test_performance_report_accepts_explicit_russian_date_format():
+    sample = diag.performance_summary({'rows': [{'sku': '123', 'date': '13.10.2026',
+                                                 'clicks': 0}]}, {'123'})
+    assert sample['target_days_observed'] == 1
+
+
+def test_SKU_filtered_listing_can_find_campaigns_missing_from_default_list(tmp_path, monkeypatch):
+    fixture_database(tmp_path)
+    mock_dpapi(monkeypatch)
+    transport = FakeTransport()
+    request = transport.request
+    def filtered(service, method, path, headers, **kwargs):
+        outcome, data = request(service, method, path, headers, **kwargs)
+        if path == '/api/client/campaign':
+            data = {'list': [{'id': '111', 'paymentType': 'CPC'}]} if kwargs['params'].get(
+                'advObjectType') == 'SKU' else {'list': [{'id': '222', 'paymentType': 'CPO'}]}
+        return outcome, data
+    transport.request = filtered
+    report = diag.run(tmp_path, transport=transport)
+    assert any(call[2] == '/api/client/campaign' and call[3]['params'].get('advObjectType') == 'SKU'
+               for call in transport.calls)
+    assert report['checks'][-1]['sample']['expense_scope'] == 'CPC_campaign_only'
