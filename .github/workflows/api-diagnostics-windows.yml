@@ -24,9 +24,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Isolate dependencies from preinstalled runner packages
+        shell: pwsh
+        run: |
+          python -m venv .diagnostic-venv
+          "$env:GITHUB_WORKSPACE\.diagnostic-venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - run: python -m pip install -r requirements-dev.txt pyinstaller==6.16.0
       - run: python -m pip check
-      - run: python -m pytest -q
+      - run: python -m pytest -q --junitxml=diagnostic-tests.xml
       - name: Build standalone diagnostic (no application update)
         run: >-
           python -m PyInstaller --noconfirm --clean --onefile --console
@@ -42,6 +47,10 @@ jobs:
           Set-Content -Path dist/diagnostics/source-commit.txt -Value '${{ github.sha }}'
           Get-FileHash dist/diagnostics/OzonApiDiagnostics.exe -Algorithm SHA256 | Format-List | Out-File dist/diagnostics/SHA256.txt
           Compress-Archive -Path dist/diagnostics/* -DestinationPath dist/OzonApiDiagnostics-Windows.zip
+          [xml]$results = Get-Content diagnostic-tests.xml
+          $suite = $results.testsuites.testsuite
+          "Tests: $($suite.tests); failures: $($suite.failures); errors: $($suite.errors); skipped: $($suite.skipped)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Packaged EXE smoke passed: real DPAPI, unchanged database and credentials, safe offline JSON." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
       - uses: actions/upload-artifact@v4
         with:
           name: OzonApiDiagnostics-Windows
