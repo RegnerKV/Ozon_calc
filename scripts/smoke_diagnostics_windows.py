@@ -1,4 +1,5 @@
 """Run the actual packaged diagnostic with synthetic DPAPI credentials; no API calls."""
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -35,7 +36,9 @@ def main():
         data.mkdir()
         credentials.save('123456', 'synthetic-seller-secret', data / 'seller.credentials')
         path = data / 'profit.db'
-        with sqlite3.connect(path) as db:
+        # sqlite3's own context manager commits but does not close the handle.
+        # Windows cannot remove the temporary directory while that handle is open.
+        with closing(sqlite3.connect(path)) as db, db:
             db.executescript('''CREATE TABLE secure_items(name TEXT PRIMARY KEY,value BLOB);
                 CREATE TABLE product_links(ozon_sku TEXT,sku TEXT);
                 CREATE TABLE operations(private_data TEXT);
@@ -74,4 +77,9 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print('::error title=Packaged diagnostic smoke::Failure category: ' +
+              type(exc).__name__, flush=True)
+        raise
