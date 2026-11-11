@@ -65,6 +65,11 @@ def main():
         dict(id='ad',day='2026-08-01',kind='advertising',amount=-50,qty=0,sku=''),
         dict(id='other',day='2026-08-01',kind='service',amount=-20,qty=0,sku=''),
     ])
+    from ozon_profit.ad_observations import save as save_ads
+    save_ads(db,dict(article='demo',start='2026-08-01',end='2026-08-01',source='diagnostic_v3',
+        updated='synthetic',listing_complete=True,eligible=2,received=1,complete=False,jobs=[],
+        reports=[dict(campaign='Synthetic report',payment='unknown',rows=[dict(day='2026-08-01',
+            clicks='17',toCart='2',expense=None,orders='1',modelOrders=None,views=None)])]))
     set_setting(db,'tax_base','sales');set_setting(db,'api_on_start','0');set_setting(db,'api_interval','0');db.close()
     env=dict(os.environ,OZON_PROFIT_DATA_DIR=str(temp),OZON_PROFIT_NO_BROWSER='1',PYTHONIOENCODING='utf-8')
     # Windows DPAPI in the same runner identity; no real key or API request.
@@ -99,6 +104,12 @@ def main():
             expect(page.locator('.st-key-kpi_marketplace [data-testid="stMetricValue"]')).to_have_text('12,00 %')
             expect(page.locator('.st-key-kpi_article_marketplace [data-testid="stMetricValue"]')).to_have_text('12,00 %')
             assert page.get_by_role('combobox',name=re.compile(r'Общие расходы по товарам$')).count()==0
+            evidence=page.get_by_test_id('stExpander').filter(has_text='Рекламные показатели товара · отдельно от финансов').first
+            evidence.locator('summary').first.click()
+            expect(page.get_by_text('Рекламные клики · известно',exact=True)).to_be_visible()
+            expect(evidence.get_by_test_id('stMetricValue').first).to_have_text('17')
+            expect(evidence.get_by_test_id('stMetricValue').nth(2)).to_have_text('Нет данных')
+            assert page.get_by_test_id('stSidebar').get_by_text('Реклама',exact=True).count()==0
             sidebar=page.get_by_test_id('stSidebar')
             sidebar.get_by_text('Товары',exact=True).click()
             expect(page.get_by_role('heading',name='Товары и себестоимость')).to_be_visible()

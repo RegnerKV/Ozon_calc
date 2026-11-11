@@ -2,6 +2,7 @@
 from datetime import date,datetime,timedelta,timezone
 import json
 import os
+import re
 import time
 import requests
 from .core import money,get_setting,set_setting
@@ -51,13 +52,21 @@ class Client:
     def __repr__(self):return '<PerformanceClient credentials=hidden>'
     def close(self):self.session.close();self.token='';self.pair=('', '')
     def request(self,method,path,**kwargs):
-        if path not in ('/api/client/token','/api/client/statistics/expense/json'):raise ApiError('Недопустимый метод Performance API')
+        allowed={'/api/client/token':'POST','/api/client/statistics/expense/json':'GET',
+            '/api/client/campaign':'GET','/api/client/statistics/json':'POST',
+            '/api/client/statistics/report':'GET'}
+        expected=allowed.get(path)
+        if expected is None and re.fullmatch(r'/api/client/statistics/[0-9a-fA-F-]{36}',path):expected='GET'
+        if expected!=method:raise ApiError('Недопустимый метод Performance API')
         for attempt in range(4):
             try:r=self.session.request(method,BASE+path,timeout=(10,45),allow_redirects=False,**kwargs)
             except requests.RequestException:
                 raise ApiError('Не удалось соединиться с api-performance.ozon.ru. Проверьте интернет и VPN. Сохранённая статистика рекламы не изменена.') from None
             if r.status_code==429 or 500<=r.status_code<600:
-                if attempt<3:self.sleep(2**attempt);continue
+                if attempt<3 and path!='/api/client/statistics/json':
+                    try:delay=max(2**attempt,min(300,int(getattr(r,'headers',{}).get('Retry-After','0'))))
+                    except (ValueError,TypeError):delay=2**attempt
+                    self.sleep(delay);continue
             if r.status_code!=200:raise ApiError(f'Performance API: HTTP {r.status_code}. Проверьте реквизиты, доступ и повторите позже.')
             try:return r.json()
             except ValueError:raise ApiError('Performance API вернул неизвестный формат отчёта. Статистика не заменена.') from None

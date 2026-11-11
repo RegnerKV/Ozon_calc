@@ -113,6 +113,8 @@ def overview(db):
     comparison_note=f'Сравнение с {prior_start:%d.%m.%Y} — {prior_end:%d.%m.%Y}'
     st.caption(comparison_note+('' if prior_known else ' · нет полных данных для сравнения'))
     st.caption(f'{start:%d.%m.%Y} — {end:%d.%m.%Y} · Предварительный расчёт')
+    from .ad_observations_ui import render as render_ad_observations
+    render_ad_observations(db,start,end)
     if issues:
         st.warning('Начисления загружены, но прибыль за этот период пока нельзя рассчитать. Ниже указаны причины.')
         cols=st.columns(3)
