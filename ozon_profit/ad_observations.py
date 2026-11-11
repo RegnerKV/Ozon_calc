@@ -197,3 +197,37 @@ def advance(db, article, skus, start, end, client, batch=3):
         run['complete'] = bool(run['eligible']) and run['received'] == run['eligible']
         run['updated'] = datetime.now(timezone.utc).isoformat(); save(db, run)
     return run
+
+
+def effectiveness(run):
+    """Evidence-based interpretation; no profitability or funnel-causality guesses."""
+    values=summary(run)
+    rows=[row for report in run['reports'] for row in report['rows']]
+    paired=[r for r in rows if r.get('clicks') is not None and r.get('toCart') is not None]
+    clicks=sum((Decimal(r['clicks']) for r in paired),Decimal(0))
+    carts=sum((Decimal(r['toCart']) for r in paired),Decimal(0))
+    ratio=carts/clicks*100 if paired and clicks>0 else None
+    reports_with_orders=sum(any(r.get('orders') is not None and Decimal(r['orders'])>0
+                               for r in report['rows']) for report in run['reports'])
+    positive_cart=any(r.get('toCart') is not None and Decimal(r['toCart'])>0 for r in rows)
+    if positive_cart:
+        interest='В рекламных отчётах наряду с кликами есть добавления в корзину. Это не подтверждает покупку или окупаемость.'
+    elif values['toCart']['known_rows']:
+        interest='В известных строках добавлений в корзину не обнаружено. Пропуски и неполное покрытие не позволяют распространить этот вывод на весь период.'
+    else:
+        interest='Данных о добавлениях в корзину нет; оценить действия после кликов нельзя.'
+    gaps=[]
+    if not run.get('listing_complete') or run['received']<run['eligible']:
+        gaps.append(f"Получены не все отчёты ({run['received']} из {run['eligible']}). Завершите загрузку кампаний.")
+    if values['expense']['observed'] is None:
+        gaps.append('В полученных строках нет расходов. Для оценки затрат нужен расход за тот же товар, период и тип оплаты.')
+    elif not values['expense']['cpc_verified']:
+        gaps.append('Тип оплаты не подтверждён: расход нельзя считать оплатой только за клики.')
+    if not reports_with_orders:
+        gaps.append('Подтверждённого итога рекламных заказов нет. Реализованные изделия из всех источников не заменяют рекламную атрибуцию.')
+    else:
+        gaps.append(f'Положительные значения заказов есть в {reports_with_orders} отчётах. Они могут пересекаться; общий итог без проверки атрибуции не определён.')
+    return dict(interest=interest,paired_rows=len(paired),paired_clicks=clicks,paired_carts=carts,
+                cart_events_per_100_clicks=ratio,gaps=gaps,
+                verdict='Окупаемость рекламы не установлена',
+                action='Не меняйте рекламный бюджет только по этим цифрам: сначала сопоставьте расходы с выручкой по рекламной атрибуции за одинаковый период. Текущие данные не доказывают ни убыточность рекламы, ни причину потери покупателей.')

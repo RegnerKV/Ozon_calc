@@ -105,7 +105,10 @@ def main():
             expect(page.locator('.st-key-kpi_article_marketplace [data-testid="stMetricValue"]')).to_have_text('12,00 %')
             assert page.get_by_role('combobox',name=re.compile(r'Общие расходы по товарам$')).count()==0
             evidence=page.get_by_test_id('stExpander').filter(has_text='Рекламные показатели товара · отдельно от финансов').first
-            evidence.locator('summary').first.click()
+            if evidence.locator('details').first.get_attribute('open') is None:
+                evidence.locator('summary').first.click()
+            expect(page.get_by_role('heading',name='Что это говорит об эффективности рекламы')).to_be_visible()
+            expect(page.get_by_text('Окупаемость рекламы не установлена',exact=True)).to_be_visible()
             expect(page.get_by_text('Рекламные клики · известно',exact=True)).to_be_visible()
             expect(evidence.get_by_test_id('stMetricValue').first).to_have_text('17')
             expect(evidence.get_by_test_id('stMetricValue').nth(2)).to_have_text('Нет данных')

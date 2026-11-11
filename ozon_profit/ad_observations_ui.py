@@ -1,5 +1,7 @@
 """Advertising evidence inside the existing overview, independent of finance."""
 import json
+import sqlite3
+from datetime import timedelta
 import pandas as pd
 import streamlit as st
 from . import ad_observations as ads
@@ -14,7 +16,21 @@ LABELS = {'views':'Рекламные показы', 'clicks':'Рекламны�
 
 
 def render(db, start, end):
-    with st.expander('Рекламные показатели товара · отдельно от финансов'):
+    path=db.execute('PRAGMA database_list').fetchone()[2]
+    _refreshing_view(path,start,end)
+
+
+@st.fragment(run_every=timedelta(seconds=10))
+def _refreshing_view(path,start,end):
+    # Fragment reruns can use a new thread; never reuse the parent's connection.
+    db=sqlite3.connect(path)
+    db.row_factory=sqlite3.Row
+    try:_render(db,start,end)
+    finally:db.close()
+
+
+def _render(db,start,end):
+    with st.expander('Рекламные показатели товара · отдельно от финансов',expanded=True):
         st.caption('Финансовые показатели рассчитываются по Seller. Эти наблюдения не меняют прибыль, реализацию и расходы. Продажи из всех источников не являются заказами по атрибуции рекламы.')
         with st.expander('Загрузить сохранённый отчёт диагностики v3'):
             upload=st.file_uploader('Локальный JSON диагностики',type=['json'],key='ad_diagnostic_file')
@@ -35,7 +51,13 @@ def render(db, start, end):
         if not articles:
             st.info('Обновите каталог магазина или загрузите сохранённый отчёт.');return
         article=st.selectbox('Артикул для рекламных показателей',articles,key='ad_article')
+        scope=(article,str(start),str(end))
         if st.button('Получить / продолжить рекламный отчёт',key='ad_advance'):
+            st.session_state['_ad_running']=scope
+        running=st.session_state.get('_ad_running')==scope
+        if running and st.button('Приостановить загрузку',key='ad_pause'):
+            st.session_state['_ad_running']=None;running=False
+        if running:
             client=None
             try:
                 pair=load_credentials(db,secret('app_password'))
@@ -43,8 +65,13 @@ def render(db, start, end):
                 skus={str(r[0]) for r in db.execute('SELECT ozon_sku FROM product_links WHERE sku=?',(article,))}
                 client=Client(*pair)
                 with st.spinner('Получаем очередную часть рекламного отчёта…'):
-                    ads.advance(db,article,skus,start,end,client)
-            except (ApiError,StorageError,CredentialError) as exc:st.warning(str(exc))
+                    progress=ads.advance(db,article,skus,start,end,client)
+                    if all(j['state'] in ('done','rejected') for j in progress['jobs']):
+                        st.session_state['_ad_running']=None
+                    else:st.info('Загрузка продолжается автоматически, пока открыт «Обзор». После закрытия её можно продолжить с сохранённого места.')
+            except (ApiError,StorageError,CredentialError) as exc:
+                st.session_state['_ad_running']=None
+                st.warning(str(exc))
             finally:
                 if client:client.close()
         run=ads.load(db,article,start,end)
@@ -55,6 +82,18 @@ def render(db, start, end):
         failed=sum(j['state']=='rejected' for j in run.get('jobs',[]))
         if failed:st.warning(f'Запросов отчёта отклонено: {failed}. Полнота не установлена; требование подписки по HTTP-коду не определено.')
         st.warning('Показаны известные наблюдения. Полнота показателей за период не установлена; пропуски не равны нулю.')
+        interpretation=ads.effectiveness(run)
+        st.subheader('Что это говорит об эффективности рекламы')
+        st.write('**'+interpretation['verdict']+'**')
+        st.write(interpretation['interest'])
+        ratio=interpretation['cart_events_per_100_clicks']
+        if ratio is not None:
+            text=f"{ratio:.2f}".replace('.',',')
+            st.write(f"В {interpretation['paired_rows']} строках, где известны оба показателя: {interpretation['paired_clicks']} кликов и {interpretation['paired_carts']} добавлений в корзину — {text} добавления на 100 кликов.")
+            st.caption('Это соотношение событий в сопоставимых строках, а не доля покупателей и не конверсия в заказ. Оно не учитывает строки с пропусками и неполученные отчёты; оценки «хорошо/плохо» без сопоставимой базы нет.')
+        st.write('**Что мешает оценить отдачу и что проверить**')
+        for gap in interpretation['gaps']:st.write('• '+gap)
+        st.info(interpretation['action'])
         values=ads.summary(run)
         cols=st.columns(3)
         for col,field in zip(cols,('clicks','toCart','expense')):

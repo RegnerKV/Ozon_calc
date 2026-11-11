@@ -98,6 +98,8 @@ def test_ui_keeps_rc3_navigation_and_missing_expenses(tmp_path,monkeypatch):
     app.date_input(key='period_start').set_value(date(2026,10,1))
     app.date_input(key='period_end').set_value(date(2026,10,2)).run()
     assert not app.exception
+    assert any(h.value=='Что это говорит об эффективности рекламы' for h in app.subheader)
+    assert any('Окупаемость рекламы не установлена' in m.value for m in app.markdown)
     assert next(m for m in app.metric if m.label=='Рекламные клики · известно').value=='15'
     assert next(m for m in app.metric if m.label=='Расход в отчёте, ₽ · известно').value=='Нет данных'
 
@@ -124,3 +126,51 @@ def test_uncertain_submission_blocks_duplicate_generation():
     with pytest.raises(ApiError):ads.advance(db,'synthetic',{'123'},'2026-10-01','2026-10-02',client)
     assert ads.load(db,'synthetic','2026-10-01','2026-10-02')['jobs'][0]['state']=='submitting'
     with pytest.raises(ApiError,match='не подтверждён'):ads.advance(db,'synthetic',{'123'},'2026-10-01','2026-10-02',client)
+
+
+def test_effectiveness_uses_paired_rows_not_mismatched_totals():
+    run=ads.diagnostic_snapshot(snapshot())
+    run['reports'][0]['rows'].append(dict(day='2026-10-02',clicks='100',toCart=None))
+    finding=ads.effectiveness(run)
+    assert finding['paired_rows']==2
+    assert finding['paired_clicks']==15 and finding['paired_carts']==2
+    assert finding['cart_events_per_100_clicks']==ads.Decimal(2)/15*100
+    assert finding['verdict']=='Окупаемость рекламы не установлена'
+    assert any('расходов' in gap for gap in finding['gaps'])
+
+
+def test_effectiveness_unknown_and_explicit_zero_are_distinct():
+    run=ads.diagnostic_snapshot(snapshot())
+    for report in run['reports']:
+        for row in report['rows']:row['clicks']=None;row['toCart']=None
+    finding=ads.effectiveness(run)
+    assert finding['cart_events_per_100_clicks'] is None
+    assert 'Данных' in finding['interest']
+    run['reports'][0]['rows'][0].update(clicks='0',toCart='0')
+    finding=ads.effectiveness(run)
+    assert finding['cart_events_per_100_clicks'] is None
+    assert 'известных строках' in finding['interest']
+
+
+def test_ui_continues_pending_export_without_another_click(tmp_path,monkeypatch):
+    from datetime import date
+    from streamlit.testing.v1 import AppTest
+    from ozon_profit.core import connect
+    from ozon_profit import ad_observations_ui as ui
+    monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
+    db=connect();db.execute("INSERT INTO products VALUES('synthetic','Demo')")
+    db.execute("INSERT INTO product_links VALUES('123','synthetic')");db.commit();db.close()
+    client=Client();client.close=lambda:None
+    monkeypatch.setattr(ui,'Client',lambda *args:client)
+    monkeypatch.setattr(ui,'load_credentials',lambda *args:('synthetic','synthetic'))
+    app=AppTest.from_file('app.py',default_timeout=20).run()
+    app.selectbox(key='overview_period').set_value('Свои даты').run()
+    app.date_input(key='period_start').set_value(date(2026,10,1))
+    app.date_input(key='period_end').set_value(date(2026,10,2)).run()
+    app.button(key='ad_advance').click().run()
+    assert not app.exception
+    assert app.session_state['_ad_running']==('synthetic','2026-10-01','2026-10-02')
+    client.ready=True;app.run()
+    assert not app.exception and app.session_state['_ad_running'] is None
+    assert sum(method=='POST' for method,path in client.calls)==1
+    assert next(m for m in app.metric if m.label=='Рекламные клики · известно').value=='4'
