@@ -100,3 +100,27 @@ def test_ui_keeps_rc3_navigation_and_missing_expenses(tmp_path,monkeypatch):
     assert not app.exception
     assert next(m for m in app.metric if m.label=='Рекламные клики · известно').value=='15'
     assert next(m for m in app.metric if m.label=='Расход в отчёте, ₽ · известно').value=='Нет данных'
+
+
+def test_rejected_report_does_not_hide_remaining_campaigns():
+    from ozon_profit.performance import PerformanceHttpError
+    class Rejected(Client):
+        def request(self,method,path,**kw):
+            if path.endswith('/campaign'): return {'list':[{'id':'6'},{'id':'7'}]}
+            if method=='POST' and kw['json']['campaigns']==['6']: raise PerformanceHttpError(400)
+            return super().request(method,path,**kw)
+    client=Rejected();client.ready=True;db=sqlite3.connect(':memory:')
+    run=ads.advance(db,'synthetic',{'123'},'2026-10-01','2026-10-02',client)
+    assert [j['state'] for j in run['jobs']]==['rejected','done']
+    assert run['received']==1 and run['eligible']==2 and not run['complete']
+
+
+def test_uncertain_submission_blocks_duplicate_generation():
+    class Uncertain(Client):
+        def request(self,method,path,**kw):
+            if method=='POST': raise ApiError('synthetic timeout')
+            return super().request(method,path,**kw)
+    db=sqlite3.connect(':memory:');client=Uncertain()
+    with pytest.raises(ApiError):ads.advance(db,'synthetic',{'123'},'2026-10-01','2026-10-02',client)
+    assert ads.load(db,'synthetic','2026-10-01','2026-10-02')['jobs'][0]['state']=='submitting'
+    with pytest.raises(ApiError,match='не подтверждён'):ads.advance(db,'synthetic',{'123'},'2026-10-01','2026-10-02',client)

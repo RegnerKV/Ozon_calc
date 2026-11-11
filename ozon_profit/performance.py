@@ -11,6 +11,12 @@ from .seller_api import ApiError
 BASE='https://api-performance.ozon.ru'
 
 
+class PerformanceHttpError(ApiError):
+    def __init__(self,status):
+        self.status=status
+        super().__init__(f'Performance API: HTTP {status}. Проверьте доступ и повторите позже. Требование подписки по этому коду не установлено.')
+
+
 def init(db):
     db.execute('CREATE TABLE IF NOT EXISTS performance_expenses(day TEXT,campaign TEXT,sku TEXT,amount TEXT,PRIMARY KEY(day,campaign,sku))')
     db.commit()
@@ -67,7 +73,7 @@ class Client:
                     try:delay=max(2**attempt,min(300,int(getattr(r,'headers',{}).get('Retry-After','0'))))
                     except (ValueError,TypeError):delay=2**attempt
                     self.sleep(delay);continue
-            if r.status_code!=200:raise ApiError(f'Performance API: HTTP {r.status_code}. Проверьте реквизиты, доступ и повторите позже.')
+            if r.status_code!=200:raise PerformanceHttpError(r.status_code)
             try:return r.json()
             except ValueError:raise ApiError('Performance API вернул неизвестный формат отчёта. Статистика не заменена.') from None
     def authorize(self):

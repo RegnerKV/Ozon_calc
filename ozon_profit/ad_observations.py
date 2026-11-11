@@ -5,6 +5,7 @@ import json
 import re
 from uuid import UUID
 from .seller_api import ApiError
+from .performance import PerformanceHttpError
 
 FIELDS = ('views', 'clicks', 'toCart', 'expense', 'orders', 'modelOrders')
 
@@ -165,14 +166,22 @@ def advance(db, article, skus, start, end, client, batch=3):
                    eligible=len(jobs), received=0, reports=[], jobs=jobs, complete=False)
         save(db, run)
     for _ in range(batch):
-        job = next((j for j in run['jobs'] if j['state'] != 'done'), None)
+        job = next((j for j in run['jobs'] if j['state'] not in ('done','rejected')), None)
         if job is None: break
         if job['state'] in ('submitting','uncertain'):
             raise ApiError('При отправке отчёта результат не подтверждён. Новые экспорты заблокированы, чтобы не дублировать запрос.')
         if job['state'] == 'new':
             job['state']='submitting'; save(db,run)
-            data = client.request('POST', '/api/client/statistics/json', headers=headers,
-                json={'campaigns':[job['campaign']], 'dateFrom':start, 'dateTo':end, 'groupBy':'DATE'})
+            try:
+                data = client.request('POST', '/api/client/statistics/json', headers=headers,
+                    json={'campaigns':[job['campaign']], 'dateFrom':start, 'dateTo':end, 'groupBy':'DATE'})
+            except PerformanceHttpError as exc:
+                # An explicit invalid request was rejected; it did not start an export.
+                # Keep the gap visible and continue with other historical campaigns.
+                if exc.status not in (400,404,422): raise
+                job['state']='rejected'; job['http_status']=exc.status
+                save(db,run)
+                continue
             try: job['uuid'] = str(UUID(data['UUID']))
             except (KeyError, TypeError, ValueError, AttributeError):
                 raise ApiError('Не получен идентификатор рекламного отчёта.') from None

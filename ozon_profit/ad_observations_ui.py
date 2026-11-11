@@ -52,6 +52,8 @@ def render(db, start, end):
             st.info('За выбранные даты рекламных наблюдений нет. Это не нулевые клики или расходы.');return
         st.caption('Источник: '+('сохранённая диагностика v3' if run['source']=='diagnostic_v3' else 'Performance API')+' · '+str(run.get('updated') or 'загрузка начата'))
         st.write(f"Распознано отчётов: {run['received']} из {run['eligible']}. Товар найден в {sum(bool(r['rows']) for r in run['reports'])} отчётах.")
+        failed=sum(j['state']=='rejected' for j in run.get('jobs',[]))
+        if failed:st.warning(f'Запросов отчёта отклонено: {failed}. Полнота не установлена; требование подписки по HTTP-коду не определено.')
         st.warning('Показаны известные наблюдения. Полнота показателей за период не установлена; пропуски не равны нулю.')
         values=ads.summary(run)
         cols=st.columns(3)
