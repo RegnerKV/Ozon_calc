@@ -357,3 +357,21 @@ def test_network_errors_are_actionable_and_never_echo_secrets(error,code,retries
     assert ENDPOINTS['types'] in str(failure.value)
     assert len(session.calls)==retries
     assert len(delays)==retries-1
+
+
+def test_order_snapshot_refresh_removes_disappeared_orders_and_partial_coverage():
+    from ozon_profit.ordered_units import summary
+    db=connect(':memory:')
+    raw=posting();raw['created_at']='2026-08-03T00:00:00Z'
+    api,_,_=client([types_response(),day_response([]),posting_response([raw]),posting_response()])
+    sync(db,api,DAY,DAY)
+    assert summary(db,DAY,DAY)['total']==2
+    api,_,_=client([types_response(),day_response([]),posting_response(),Response(status=403)])
+    with pytest.raises(ApiError):sync(db,api,DAY,DAY)
+    assert summary(db,DAY,DAY)['total']==2
+    api,_,_=client([types_response(),day_response([]),posting_response(),posting_response()])
+    sync(db,api,DAY,DAY)
+    assert summary(db,DAY,DAY)['total']==0
+    api,_,_=client([types_response(),day_response([])])
+    sync(db,api,DAY,DAY,schemes=())
+    assert summary(db,DAY,DAY)['total'] is None

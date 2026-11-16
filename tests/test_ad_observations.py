@@ -98,8 +98,8 @@ def test_ui_keeps_rc3_navigation_and_missing_expenses(tmp_path,monkeypatch):
     app.date_input(key='period_start').set_value(date(2026,10,1))
     app.date_input(key='period_end').set_value(date(2026,10,2)).run()
     assert not app.exception
-    assert any(h.value=='Что это говорит об эффективности рекламы' for h in app.subheader)
-    assert any('Окупаемость рекламы не установлена' in m.value for m in app.markdown)
+    assert not any(h.value=='Что это говорит об эффективности рекламы' for h in app.subheader)
+    assert not any('Окупаемость рекламы не установлена' in m.value for m in app.markdown)
     assert next(m for m in app.metric if m.label=='Рекламные клики · известно').value=='15'
     assert next(m for m in app.metric if m.label=='Расход в отчёте, ₽ · известно').value=='Нет данных'
 

@@ -115,6 +115,8 @@ def overview(db):
     st.caption(f'{start:%d.%m.%Y} — {end:%d.%m.%Y} · Предварительный расчёт')
     from .ad_observations_ui import render as render_ad_observations
     render_ad_observations(db,start,end)
+    from .ordered_units import render as render_ordered_units
+    render_ordered_units(db,start,end)
     if issues:
         st.warning('Начисления загружены, но прибыль за этот период пока нельзя рассчитать. Ниже указаны причины.')
         cols=st.columns(3)
@@ -157,7 +159,15 @@ def overview(db):
     frame=details_frame(result['details'])
     ads=sum(((-money(r['amount'])) for r in result['details'] if r['kind'] in ('Реклама','Возврат расходов на рекламу')),money(0))
     row=st.columns(4)
-    metric(row[3],'drr','ДРР магазина за период',(f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации') if known_ads else 'Нет данных рекламы',tone('drr',advertising['store'] if known_ads else None))
+    metric(row[3],'drr','ДРР магазина от реализации',(f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации') if known_ads else 'Нет данных рекламы',tone('drr',advertising['store'] if known_ads else None))
+    from .limit_price_drr import denominator as limit_denominator,ratio as limit_ratio
+    limit_base=limit_denominator(db,start,end)
+    limit_expense=perf['total'] if perf else advertising['advertising'] if known_ads else None
+    limit_drr=limit_ratio(limit_expense,limit_base['total'])
+    st.metric('ДРР относительно предельной цены',f'{limit_drr:.2f} %'.replace('.',',') if limit_drr is not None else 'Нет данных')
+    st.caption('База: историческая цена продавца seller_price × проданные штуки минус возвраты за период. Цена каждой строки сверяется с sale_amount; цена покупателя и сумма соинвеста её не заменяют. ДРР от реализации сохранён отдельно.')
+    if limit_base['reason']:st.caption(limit_base['reason'])
+    elif limit_base['total']<=0:st.caption('База по предельной цене за вычетом возвратов неположительная; ДРР не определён.')
     metric(row[0],'costs','Себестоимость',cash(result['costs']))
     tax_label='Налоги ('+format(money(get_setting(db,'tax_rate','4')).normalize(),'f')+'%)'
     metric(row[1],'tax',tax_label,cash(result['tax']) if not result['stale_api'] else 'Нужен пересчёт')
@@ -232,13 +242,16 @@ def overview(db):
             c1,c2,c3,c4=st.columns(4)
             metric(c1,'article_profit','Чистая прибыль по артикулу',cash(p['profit']) if not p['blocked'] else 'Недостаточно данных',tone('profit',p['profit'] if not p['blocked'] else None))
             metric(c2,'article_revenue','Реализация по артикулу',cash(p['revenue']),tone('revenue',p['revenue'],prior_revenue),help=comparison_note+(' · '+cash(prior_revenue) if prior_revenue is not None else ' · нет данных'))
-            metric(c3,'article_drr','ДРР артикула',f'{p["drr"]:.2f} %'.replace('.',',') if p['drr'] is not None and product_ads_known else 'Нет данных рекламы',tone('drr',p['drr'] if product_ads_known else None))
+            metric(c3,'article_drr','ДРР артикула от реализации',f'{p["drr"]:.2f} %'.replace('.',',') if p['drr'] is not None and product_ads_known else 'Нет данных рекламы',tone('drr',p['drr'] if product_ads_known else None))
             metric(c4,'article_marketplace','Расходы на Ozon по артикулу, %',f'{p["marketplace_percent"]:.2f} %'.replace('.',',') if p['marketplace_percent'] is not None else '—',help=marketplace_help+' Общие расходы распределены по выручке. Сумма по артикулу: '+cash(p['marketplace_costs']))
             c1,c2,c3,c4=st.columns(4)
             metric(c1,'article_costs','Себестоимость артикула',cash(p['costs']))
             metric(c2,'article_tax','Налоги по артикулу',cash(p['tax']))
             metric(c3,'article_ads','Реклама по артикулу',cash(p['advertising']) if product_ads_known else 'Нет данных рекламы')
             metric(c4,'article_margin','Процент прибыли артикула',f'{p["margin"]:.2f} %'.replace('.',',') if p['margin'] is not None else '—',tone('margin',p['margin']))
+            article_limit_expense=(perf['products'].get(selected_sku) if perf and perf['unassigned']==0 else p['advertising'] if product_ads_known and not perf and advertising['unassigned']==0 else None)
+            article_limit_drr=limit_ratio(article_limit_expense,limit_base['products'].get(selected_sku))
+            st.metric('ДРР артикула относительно предельной цены',f'{article_limit_drr:.2f} %'.replace('.',',') if article_limit_drr is not None else 'Нет данных')
             st.caption('Чистая прибыль на штуку после возвратов: '+(cash(p['unit_profit']) if p['unit_profit'] is not None else 'не определена')+'. ДРР = реклама ÷ реализация покупателям × 100%.')
         with st.expander('Посмотреть заказы и операции'):
             order=st.text_input('Номер отправления',key='order_filter')

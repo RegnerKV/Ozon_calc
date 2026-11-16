@@ -70,6 +70,12 @@ def main():
         updated='synthetic',listing_complete=True,eligible=2,received=1,complete=False,jobs=[],
         reports=[dict(campaign='Synthetic report',payment='unknown',rows=[dict(day='2026-08-01',
             clicks='17',toCart='2',expense=None,orders='1',modelOrders=None,views=None)])]))
+    import json
+    from ozon_profit.seller_api import init_tables
+    init_tables(db)
+    db.execute('INSERT INTO api_order_snapshots(start,end,payload) VALUES(?,?,?)',('2026-08-01','2026-08-01',json.dumps([
+        dict(posting_number='demo-one',status='awaiting_packaging',order_created_at='2026-08-01T00:00:00Z',products=[dict(offer_id='demo',quantity=3)]),
+        dict(posting_number='demo-two',status='cancelled',order_created_at='2026-08-01T00:00:00Z',products=[dict(offer_id='demo',quantity=1)])])))
     set_setting(db,'tax_base','sales');set_setting(db,'api_on_start','0');set_setting(db,'api_interval','0');db.close()
     env=dict(os.environ,OZON_PROFIT_DATA_DIR=str(temp),OZON_PROFIT_NO_BROWSER='1',PYTHONIOENCODING='utf-8')
     # Windows DPAPI in the same runner identity; no real key or API request.
@@ -99,6 +105,10 @@ def main():
             page.locator('table.ozon-expenses summary').filter(has_text='Реклама').click()
             expect(page.locator('table.ozon-expenses .child').first).to_be_visible()
             expect(page.get_by_text('Чистая прибыль по артикулу',exact=True)).to_be_visible()
+            metrics=page.get_by_test_id('stMetric')
+            expect(metrics.filter(has_text=re.compile(r'^Заказано, шт\.')).get_by_test_id('stMetricValue')).to_have_text('4')
+            expect(metrics.filter(has_text=re.compile(r'^Из них отменено, шт\.')).get_by_test_id('stMetricValue')).to_have_text('1')
+            expect(metrics.filter(has_text=re.compile(r'^ДРР относительно предельной цены')).get_by_test_id('stMetricValue')).to_have_text('Нет данных')
             expect(page.locator('.st-key-kpi_sold_units [data-testid="stMetricValue"]')).to_have_text('2 шт.')
             expect(page.locator('.st-key-kpi_article_sold [data-testid="stMetricValue"]')).to_have_text('2 шт.')
             expect(page.locator('.st-key-kpi_marketplace [data-testid="stMetricValue"]')).to_have_text('12,00 %')
@@ -107,8 +117,8 @@ def main():
             evidence=page.get_by_test_id('stExpander').filter(has_text='Рекламные показатели товара · отдельно от финансов').first
             if evidence.locator('details').first.get_attribute('open') is None:
                 evidence.locator('summary').first.click()
-            expect(page.get_by_role('heading',name='Что это говорит об эффективности рекламы')).to_be_visible()
-            expect(page.get_by_text('Окупаемость рекламы не установлена',exact=True)).to_be_visible()
+            expect(page.get_by_role('heading',name='Что это говорит об эффективности рекламы')).to_have_count(0)
+            expect(page.get_by_text('Окупаемость рекламы не установлена',exact=True)).to_have_count(0)
             expect(page.get_by_text('Рекламные клики · известно',exact=True)).to_be_visible()
             expect(evidence.get_by_test_id('stMetricValue').first).to_have_text('17')
             expect(evidence.get_by_test_id('stMetricValue').nth(2)).to_have_text('Нет данных')

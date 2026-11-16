@@ -339,13 +339,16 @@ def clean_posting(item,kind):
             if not isinstance(quantity,int) or isinstance(quantity,bool) or quantity<=0:raise ValueError()
             products.append({k:p.get(k) for k in ['sku','offer_id','name','quantity','price']})
         return dict(posting_number=number,status=status,schema=kind,products=products,
-                    created_at=item.get('in_process_at') or item.get('created_at'))
+                    created_at=item.get('in_process_at') or item.get('created_at'),
+                    order_created_at=item.get('created_at') if kind=='fbo' else item.get('in_process_at'),
+                    parent_posting_number=item.get('parent_posting_number'))
     except (KeyError,TypeError,ValueError):raise ApiError('Не удалось разобрать отправление Ozon') from None
 
 
 def init_tables(db):
     db.executescript('''
     CREATE TABLE IF NOT EXISTS api_finance(id TEXT PRIMARY KEY,day TEXT NOT NULL,amount TEXT NOT NULL,payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS api_order_snapshots(id INTEGER PRIMARY KEY, start TEXT NOT NULL,end TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS api_postings(posting_number TEXT PRIMARY KEY,schema TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);
     ''')
 
@@ -388,6 +391,12 @@ def sync(db,client,start,end,schemes=('fbo','fbs')):
             [(i['id'],i['day'],i['amount'],json.dumps(i['payload'],ensure_ascii=False,default=str)) for i in finances.values()])
         db.executemany('INSERT INTO api_postings VALUES(?,?,?,?) ON CONFLICT(posting_number) DO UPDATE SET schema=excluded.schema,status=excluded.status,payload=excluded.payload',
             [(p['posting_number'],p['schema'],p['status'],json.dumps(p,ensure_ascii=False,default=str)) for p in postings.values()])
+        # Exact complete snapshot avoids mixing stale compositions from overlapping refreshes.
+        # A partial-scheme refresh invalidates coverage rather than implying zero orders.
+        db.execute('DELETE FROM api_order_snapshots WHERE NOT(end<? OR start>?)',(str(start),str(end)))
+        if set(schemes)=={'fbo','fbs'}:
+            db.execute('INSERT INTO api_order_snapshots(start,end,payload) VALUES(?,?,?)',
+                (str(start),str(end),json.dumps(list(postings.values()),ensure_ascii=False,default=str)))
         for posting in postings.values():
             for product in posting['products']:
                 if product.get('sku') is not None and product.get('offer_id'):

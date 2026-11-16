@@ -82,18 +82,6 @@ def _render(db,start,end):
         failed=sum(j['state']=='rejected' for j in run.get('jobs',[]))
         if failed:st.warning(f'Запросов отчёта отклонено: {failed}. Полнота не установлена; требование подписки по HTTP-коду не определено.')
         st.warning('Показаны известные наблюдения. Полнота показателей за период не установлена; пропуски не равны нулю.')
-        interpretation=ads.effectiveness(run)
-        st.subheader('Что это говорит об эффективности рекламы')
-        st.write('**'+interpretation['verdict']+'**')
-        st.write(interpretation['interest'])
-        ratio=interpretation['cart_events_per_100_clicks']
-        if ratio is not None:
-            text=f"{ratio:.2f}".replace('.',',')
-            st.write(f"В {interpretation['paired_rows']} строках, где известны оба показателя: {interpretation['paired_clicks']} кликов и {interpretation['paired_carts']} добавлений в корзину — {text} добавления на 100 кликов.")
-            st.caption('Это соотношение событий в сопоставимых строках, а не доля покупателей и не конверсия в заказ. Оно не учитывает строки с пропусками и неполученные отчёты; оценки «хорошо/плохо» без сопоставимой базы нет.')
-        st.write('**Что мешает оценить отдачу и что проверить**')
-        for gap in interpretation['gaps']:st.write('• '+gap)
-        st.info(interpretation['action'])
         values=ads.summary(run)
         cols=st.columns(3)
         for col,field in zip(cols,('clicks','toCart','expense')):
