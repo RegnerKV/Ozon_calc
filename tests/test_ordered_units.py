@@ -56,8 +56,16 @@ def test_order_metrics_render_without_financial_sales(tmp_path,monkeypatch):
     app.date_input(key='period_start').set_value(START)
     app.date_input(key='period_end').set_value(END).run()
     assert not app.exception
-    assert next(m for m in app.metric if m.label=='Заказано, шт.').value=='5'
-    assert next(m for m in app.metric if m.label=='Из них отменено, шт.').value=='2'
+    assert next(m for m in app.metric if m.label=='Заказано, шт.').value=='5 шт.'
+    assert next(m for m in app.metric if m.label=='Отменено, шт.').value=='2 шт.'
+    table=next(d.value for d in app.dataframe if 'Заказано, шт.' in d.value.columns)
+    assert list(table.columns[:6])==['Артикул','Изделие','Заказано, шт.','Продано, шт.','Отменено, шт.','Возвраты, шт.']
+    assert len(table)==1 and table.iloc[0]['Заказано, шт.']==5
+    assert table.iloc[0]['Продано, шт.'] is None
+    assert next(m for m in app.metric if m.label=='Заказано по артикулу').value=='5 шт.'
+    assert next(m for m in app.metric if m.label=='Отменено по артикулу').value=='2 шт.'
+    assert next(m for m in app.metric if m.label=='Продано по артикулу').value=='Нет данных'
+    assert next(m for m in app.metric if m.label=='ДРР артикула относительно предельной цены').value=='Нет данных'
 
 
 def test_fbs_uses_agreed_processing_date_without_changing_finance_date():
@@ -70,3 +78,11 @@ def test_parent_and_split_compositions_are_not_double_counted():
     db=connect(':memory:');init_tables(db)
     snapshot(db,[posting('original',3),{**posting('child',3),'parent_posting_number':'original'}])
     assert summary(db,START,END)['total'] is None
+
+
+def test_product_counts_distinguish_no_orders_from_unknown_coverage():
+    from ozon_profit.ordered_units import product_counts
+    db=connect(':memory:');init_tables(db)
+    assert product_counts(summary(db,START,END),'missing')==dict(total=None,cancelled=None)
+    snapshot(db,[])
+    assert product_counts(summary(db,START,END),'missing')==dict(total=0,cancelled=0)

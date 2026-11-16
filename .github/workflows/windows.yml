@@ -42,7 +42,9 @@ jobs:
         if: always()
         with:
           name: Windows-smoke-evidence
-          path: windows-smoke.png
+          path: |
+            windows-smoke.png
+            windows-dashboard.png
           if-no-files-found: ignore
   release:
     if: startsWith(github.ref, 'refs/tags/')

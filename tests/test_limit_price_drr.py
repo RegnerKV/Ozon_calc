@@ -48,14 +48,21 @@ def test_no_ratio_when_data_missing_or_base_nonpositive(expense,base):
     assert ratio(expense,base) is None
 
 
-def test_overview_shows_both_drr_bases(db,tmp_path,monkeypatch):
+@pytest.mark.parametrize('attributed',[False,True])
+def test_overview_shows_both_drr_bases(db,tmp_path,monkeypatch,attributed):
     from datetime import date
     from streamlit.testing.v1 import AppTest
     from ozon_profit.core import connect
     stage(db,[posting_accrual(),dict(accrual_id=2,date=START,accrued_category='NON_ITEM',total_amount={'amount':'-60.5','currency':'RUB'},non_item_fee={'type_id':9,'accrued':{'amount':'-60.5','currency':'RUB'}})])
     promote(db,START,END)
     monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
-    local=connect();db.backup(local);local.close()
+    local=connect();db.backup(local)
+    from test_ordered_units import snapshot,posting
+    snapshot(local,[posting('one',5),{**posting('two',2,'cancelled'),'products':[dict(offer_id='orders-only',quantity=2)]}])
+    local.commit();local.close()
+    if attributed:
+        from ozon_profit import performance
+        monkeypatch.setattr(performance,'report',lambda *args:dict(store=D('12.1'),unassigned=D(0),products={'demo':D('60.5')},total=D('60.5')))
     app=AppTest.from_file('app.py',default_timeout=20).run()
     app.selectbox(key='overview_period').set_value('Свои даты').run()
     app.date_input(key='period_start').set_value(date.fromisoformat(START))
@@ -63,3 +70,18 @@ def test_overview_shows_both_drr_bases(db,tmp_path,monkeypatch):
     assert not app.exception
     assert next(m for m in app.metric if m.label=='ДРР магазина от реализации').value=='12,10 %'
     assert next(m for m in app.metric if m.label=='ДРР относительно предельной цены').value=='10,00 %'
+    assert next(m for m in app.metric if m.label=='ДРР артикула относительно предельной цены').value==('10,00 %' if attributed else 'Нет данных')
+    if not attributed:
+        assert any('ДРР от предельной цены не определён' in c.value for c in app.caption)
+    assert app.selectbox(key='article_dashboard').value=='demo'
+    table=next(d.value for d in app.dataframe if 'Заказано, шт.' in d.value.columns).set_index('Артикул')
+    assert table.loc['demo','Заказано, шт.']==5
+    assert table.loc['orders-only','Отменено, шт.']==2
+    import pandas as pd
+    assert pd.isna(table.loc['orders-only','Продано, шт.'])
+    app.selectbox(key='article_dashboard').set_value('orders-only').run()
+    assert not app.exception
+    assert next(m for m in app.metric if m.label=='Заказано по артикулу').value=='2 шт.'
+    assert next(m for m in app.metric if m.label=='Отменено по артикулу').value=='2 шт.'
+    assert next(m for m in app.metric if m.label=='Продано по артикулу').value=='Нет данных'
+    assert next(m for m in app.metric if m.label=='ДРР артикула относительно предельной цены').value=='Нет данных'

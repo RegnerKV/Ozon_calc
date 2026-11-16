@@ -106,22 +106,21 @@ def main():
             expect(page.locator('table.ozon-expenses .child').first).to_be_visible()
             expect(page.get_by_text('Чистая прибыль по артикулу',exact=True)).to_be_visible()
             metrics=page.get_by_test_id('stMetric')
-            expect(metrics.filter(has_text=re.compile(r'^Заказано, шт\.')).get_by_test_id('stMetricValue')).to_have_text('4')
-            expect(metrics.filter(has_text=re.compile(r'^Из них отменено, шт\.')).get_by_test_id('stMetricValue')).to_have_text('1')
+            expect(metrics.filter(has_text=re.compile(r'^Заказано, шт\.')).get_by_test_id('stMetricValue')).to_have_text('4 шт.')
+            expect(metrics.filter(has_text=re.compile(r'^Отменено, шт\.')).get_by_test_id('stMetricValue')).to_have_text('1 шт.')
             expect(metrics.filter(has_text=re.compile(r'^ДРР относительно предельной цены')).get_by_test_id('stMetricValue')).to_have_text('Нет данных')
             expect(page.locator('.st-key-kpi_sold_units [data-testid="stMetricValue"]')).to_have_text('2 шт.')
             expect(page.locator('.st-key-kpi_article_sold [data-testid="stMetricValue"]')).to_have_text('2 шт.')
             expect(page.locator('.st-key-kpi_marketplace [data-testid="stMetricValue"]')).to_have_text('12,00 %')
             expect(page.locator('.st-key-kpi_article_marketplace [data-testid="stMetricValue"]')).to_have_text('12,00 %')
             assert page.get_by_role('combobox',name=re.compile(r'Общие расходы по товарам$')).count()==0
-            evidence=page.get_by_test_id('stExpander').filter(has_text='Рекламные показатели товара · отдельно от финансов').first
-            if evidence.locator('details').first.get_attribute('open') is None:
-                evidence.locator('summary').first.click()
-            expect(page.get_by_role('heading',name='Что это говорит об эффективности рекламы')).to_have_count(0)
-            expect(page.get_by_text('Окупаемость рекламы не установлена',exact=True)).to_have_count(0)
-            expect(page.get_by_text('Рекламные клики · известно',exact=True)).to_be_visible()
-            expect(evidence.get_by_test_id('stMetricValue').first).to_have_text('17')
-            expect(evidence.get_by_test_id('stMetricValue').nth(2)).to_have_text('Нет данных')
+            expect(page.get_by_test_id('stExpander').filter(has_text='Рекламные показатели товара · отдельно от финансов')).to_have_count(0)
+            for key in ('ordered_units','cancelled_units','article_ordered','article_cancelled'):
+                expect(page.locator('.st-key-kpi_'+key+' [data-testid="stMetric"]')).to_have_css('background-color','rgb(242, 243, 245)')
+            expect(page.locator('.st-key-kpi_article_ordered [data-testid="stMetricValue"]')).to_have_text('4 шт.')
+            expect(page.locator('.st-key-kpi_article_cancelled [data-testid="stMetricValue"]')).to_have_text('1 шт.')
+            expect(page.locator('.st-key-kpi_article_limit_drr [data-testid="stMetricValue"]')).to_have_text('Нет данных')
+            page.screenshot(path=str(ROOT/'windows-dashboard.png'),full_page=True)
             assert page.get_by_test_id('stSidebar').get_by_text('Реклама',exact=True).count()==0
             sidebar=page.get_by_test_id('stSidebar')
             sidebar.get_by_text('Товары',exact=True).click()

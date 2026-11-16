@@ -34,13 +34,9 @@ def summary(db,start,end):
     return dict(total=total,cancelled=cancelled,products=dict(products),reason='')
 
 
-def render(db,start,end):
-    import streamlit as st
-    result=summary(db,start,end)
-    a,b=st.columns(2)
-    a.metric('Заказано, шт.',result['total'] if result['total'] is not None else 'Нет данных')
-    b.metric('Из них отменено, шт.',result['cancelled'] if result['cancelled'] is not None else 'Нет данных')
-    st.caption('Единицы товара по дате создания отправления FBO / начала обработки FBS (Москва), включая недоставленные и отменённые. Отменённые показаны отдельно и входят в общее количество. Продажи и возвраты считаются отдельно по финансовым датам.')
-    if result['reason']:st.info(result['reason'])
-    if result['products']:
-        st.dataframe([{'Артикул':sku,'Заказано, шт.':p['total'],'Из них отменено, шт.':p['cancelled']} for sku,p in sorted(result['products'].items())],hide_index=True,width='stretch')
+DATE_NOTE='Единицы товара по дате создания отправления FBO / начала обработки FBS (Москва), включая недоставленные и отменённые. Отменённые входят в заказанное количество. Продажи и возвраты — по финансовым датам.'
+
+
+def product_counts(result,sku):
+    if result['total'] is None:return dict(total=None,cancelled=None)
+    return result['products'].get(sku,dict(total=0,cancelled=0))

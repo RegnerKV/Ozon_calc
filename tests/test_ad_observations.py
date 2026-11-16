@@ -100,8 +100,9 @@ def test_ui_keeps_rc3_navigation_and_missing_expenses(tmp_path,monkeypatch):
     assert not app.exception
     assert not any(h.value=='Что это говорит об эффективности рекламы' for h in app.subheader)
     assert not any('Окупаемость рекламы не установлена' in m.value for m in app.markdown)
-    assert next(m for m in app.metric if m.label=='Рекламные клики · известно').value=='15'
-    assert next(m for m in app.metric if m.label=='Расход в отчёте, ₽ · известно').value=='Нет данных'
+    assert not any('Рекламные показатели товара' in e.label for e in app.expander)
+    assert not any(m.label=='Рекламные клики · известно' for m in app.metric)
+    assert not any(b.key=='ad_advance' for b in app.button)
 
 
 def test_rejected_report_does_not_hide_remaining_campaigns():
@@ -152,25 +153,15 @@ def test_effectiveness_unknown_and_explicit_zero_are_distinct():
     assert 'известных строках' in finding['interest']
 
 
-def test_ui_continues_pending_export_without_another_click(tmp_path,monkeypatch):
-    from datetime import date
+def test_removed_observations_never_resume_pending_reports(tmp_path,monkeypatch):
     from streamlit.testing.v1 import AppTest
     from ozon_profit.core import connect
-    from ozon_profit import ad_observations_ui as ui
     monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
-    db=connect();db.execute("INSERT INTO products VALUES('synthetic','Demo')")
-    db.execute("INSERT INTO product_links VALUES('123','synthetic')");db.commit();db.close()
-    client=Client();client.close=lambda:None
-    monkeypatch.setattr(ui,'Client',lambda *args:client)
-    monkeypatch.setattr(ui,'load_credentials',lambda *args:('synthetic','synthetic'))
-    app=AppTest.from_file('app.py',default_timeout=20).run()
-    app.selectbox(key='overview_period').set_value('Свои даты').run()
-    app.date_input(key='period_start').set_value(date(2026,10,1))
-    app.date_input(key='period_end').set_value(date(2026,10,2)).run()
-    app.button(key='ad_advance').click().run()
+    db=connect();ads.save(db,ads.diagnostic_snapshot(snapshot()));db.close()
+    def unexpected(*args,**kwargs):raise AssertionError('Removed report loader was called')
+    monkeypatch.setattr(ads,'advance',unexpected)
+    app=AppTest.from_file('app.py',default_timeout=20)
+    app.session_state['_ad_running']=('synthetic','2026-10-01','2026-10-02')
+    app.run();app.run()
     assert not app.exception
-    assert app.session_state['_ad_running']==('synthetic','2026-10-01','2026-10-02')
-    client.ready=True;app.run()
-    assert not app.exception and app.session_state['_ad_running'] is None
-    assert sum(method=='POST' for method,path in client.calls)==1
-    assert next(m for m in app.metric if m.label=='Рекламные клики · известно').value=='4'
+    assert not any(b.key in ('ad_advance','ad_pause','ad_import') for b in app.button)
