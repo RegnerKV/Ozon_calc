@@ -165,13 +165,18 @@ def overview(db):
     frame=details_frame(result['details'])
     ads=sum(((-money(r['amount'])) for r in result['details'] if r['kind'] in ('Реклама','Возврат расходов на рекламу')),money(0))
     row=st.columns(3)
-    drr_columns=st.columns(2)
+    from .romi import report as romi_report,percent as romi_percent,NOTE as ROMI_NOTE
+    romi=romi_report(result,perf)
+    drr_columns=st.columns(3)
     metric(drr_columns[0],'drr','ДРР магазина от реализации',(f'{advertising["store"]:.2f} %'.replace('.',',') if advertising['store'] is not None else 'Нет реализации') if known_ads else 'Нет данных рекламы',tone('drr',advertising['store'] if known_ads else None))
     from .limit_price_drr import denominator as limit_denominator,ratio as limit_ratio
     limit_base=limit_denominator(db,start,end)
     limit_expense=perf['total'] if perf else advertising['advertising'] if known_ads else None
     limit_drr=limit_ratio(limit_expense,limit_base['total'])
     metric(drr_columns[1],'limit_drr','ДРР относительно предельной цены',f'{limit_drr:.2f} %'.replace('.',',') if limit_drr is not None else 'Нет данных',tone('drr',limit_drr))
+    metric(drr_columns[2],'romi','ROMI магазина',romi_percent(romi['store']),help=ROMI_NOTE)
+    st.caption(ROMI_NOTE)
+    if romi['reason']:st.caption(romi['reason'])
     st.caption('База: историческая цена продавца seller_price × проданные штуки минус возвраты за период. Цена каждой строки сверяется с sale_amount; цена покупателя и сумма соинвеста её не заменяют. ДРР от реализации сохранён отдельно.')
     if limit_base['reason']:st.caption(limit_base['reason'])
     elif limit_base['total']<=0:st.caption('База по предельной цене за вычетом возвратов неположительная; ДРР не определён.')
@@ -228,15 +233,17 @@ def overview(db):
         p=overview_products['products'].get(sku)
         counts=product_counts(ordered,sku)
         if p is None:
-            lines.append({'Артикул':sku,'Изделие':names.get(sku) or sku,'Заказано, шт.':counts['total'],'Продано, шт.':None,'Отменено, шт.':counts['cancelled'],'Возвраты, шт.':None})
+            lines.append({'Артикул':sku,'Изделие':names.get(sku) or sku,'Заказано, шт.':counts['total'],'Продано, шт.':None,'Отменено, шт.':counts['cancelled'],'Возвраты, шт.':None,'ROMI, %':None})
             continue
         lines.append({'Артикул':sku,'Изделие':names.get(sku) or p['name'] or sku,'Заказано, шт.':counts['total'],'Продано, шт.':float(p['sold_quantity']),'Отменено, шт.':counts['cancelled'],'Возвраты, шт.':float(p['returned_quantity']),'Итог, шт.':float(p['quantity']),
             'Реализация, ₽':float(rub(p['revenue'])),'Себестоимость, ₽':float(rub(p['costs'])),'Налоги, ₽':float(rub(p['tax'])),
             'Расходы на Ozon без рекламы, %':float(p['marketplace_percent']) if p['marketplace_percent'] is not None else None,
             'Чистая прибыль по артикулу, ₽':float(rub(p['profit'])) if not p['blocked'] else None,
-            'Реклама, ₽':float(rub(p['advertising'])) if overview_products['allocated'] or overview_products['unassigned_advertising']==0 else None,'ДРР, %':float(p['drr']) if p['drr'] is not None else None})
+            'Реклама, ₽':float(rub(p['advertising'])) if overview_products['allocated'] or overview_products['unassigned_advertising']==0 else None,'ДРР, %':float(p['drr']) if p['drr'] is not None else None,
+            'ROMI, %':float(romi['products'][sku]) if romi['products'].get(sku) is not None else None})
     if lines:
         table_columns={name:st.column_config.NumberColumn(format='%d') for name in ('Заказано, шт.','Продано, шт.','Отменено, шт.','Возвраты, шт.','Итог, шт.')}
+        table_columns['ROMI, %']=st.column_config.NumberColumn(format='%.2f',help=ROMI_NOTE)
         table_columns['Расходы на Ozon без рекламы, %']=st.column_config.NumberColumn(format='%.2f')
         st.dataframe(pd.DataFrame(lines),hide_index=True,width='stretch',column_config=table_columns)
         selected_sku=st.selectbox('Посмотреть артикул',display_skus,format_func=lambda sku:(names.get(sku) or sku)+' · '+sku,key='article_dashboard')
@@ -253,16 +260,18 @@ def overview(db):
         metric(c,'article_cancelled','Отменено по артикулу',units(counts['cancelled']) if counts['cancelled'] is not None else 'Нет данных')
         metric(d,'article_returned','Возвраты по артикулу',units(p['returned_quantity']) if p is not None else 'Нет данных')
         if p is None:
-            dr1,dr2=st.columns(2)
+            dr1,dr2,dr3=st.columns(3)
             metric(dr1,'article_drr','ДРР артикула от реализации','Нет данных')
             metric(dr2,'article_limit_drr','ДРР артикула относительно предельной цены','Нет данных')
+            metric(dr3,'article_romi','ROMI артикула','Нет данных',help=ROMI_NOTE)
             st.info('По этому артикулу есть заказы, но нет финансовых данных за выбранный период.')
         else:
-            dr1,dr2=st.columns(2)
+            dr1,dr2,dr3=st.columns(3)
             metric(dr1,'article_drr','ДРР артикула от реализации',f'{p["drr"]:.2f} %'.replace('.',',') if p['drr'] is not None and product_ads_known else 'Нет данных рекламы',tone('drr',p['drr'] if product_ads_known else None))
             article_limit_expense=(perf['products'].get(selected_sku) if perf and perf['unassigned']==0 else p['advertising'] if product_ads_known and not perf and advertising['unassigned']==0 else None)
             article_limit_drr=limit_ratio(article_limit_expense,limit_base['products'].get(selected_sku))
             metric(dr2,'article_limit_drr','ДРР артикула относительно предельной цены',f'{article_limit_drr:.2f} %'.replace('.',',') if article_limit_drr is not None else 'Нет данных',tone('drr',article_limit_drr))
+            metric(dr3,'article_romi','ROMI артикула',romi_percent(romi['products'].get(selected_sku)),help=ROMI_NOTE)
             if article_limit_drr is None:st.caption('ДРР от предельной цены не определён: нужна положительная сверенная база и рекламные расходы, отнесённые к этому артикулу.')
             c1,c2,c3,c4=st.columns(4)
             metric(c1,'article_profit','Чистая прибыль по артикулу',cash(p['profit']) if not p['blocked'] else 'Недостаточно данных',tone('profit',p['profit'] if not p['blocked'] else None))

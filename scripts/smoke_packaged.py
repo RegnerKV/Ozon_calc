@@ -120,6 +120,8 @@ def main():
             expect(page.locator('.st-key-kpi_article_ordered [data-testid="stMetricValue"]')).to_have_text('4 шт.')
             expect(page.locator('.st-key-kpi_article_cancelled [data-testid="stMetricValue"]')).to_have_text('1 шт.')
             expect(page.locator('.st-key-kpi_article_limit_drr [data-testid="stMetricValue"]')).to_have_text('Нет данных')
+            expect(page.locator('.st-key-kpi_romi [data-testid="stMetricValue"]')).to_have_text('1530,62 %')
+            expect(page.locator('.st-key-kpi_article_romi [data-testid="stMetricValue"]')).to_have_text('1530,62 %')
             page.screenshot(path=str(ROOT/'windows-dashboard.png'),full_page=True)
             assert page.get_by_test_id('stSidebar').get_by_text('Реклама',exact=True).count()==0
             sidebar=page.get_by_test_id('stSidebar')

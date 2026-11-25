@@ -84,4 +84,5 @@ def test_overview_shows_both_drr_bases(db,tmp_path,monkeypatch,attributed):
     assert next(m for m in app.metric if m.label=='Заказано по артикулу').value=='2 шт.'
     assert next(m for m in app.metric if m.label=='Отменено по артикулу').value=='2 шт.'
     assert next(m for m in app.metric if m.label=='Продано по артикулу').value=='Нет данных'
+    assert next(m for m in app.metric if m.label=='ROMI артикула').value=='Нет данных'
     assert next(m for m in app.metric if m.label=='ДРР артикула относительно предельной цены').value=='Нет данных'
