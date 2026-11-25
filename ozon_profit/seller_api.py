@@ -351,6 +351,9 @@ def init_tables(db):
     CREATE TABLE IF NOT EXISTS api_order_snapshots(id INTEGER PRIMARY KEY, start TEXT NOT NULL,end TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS api_postings(posting_number TEXT PRIMARY KEY,schema TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);
     ''')
+    if not any(r[1]=='schemes' for r in db.execute('PRAGMA table_info(api_order_snapshots)')):
+        # Old snapshots were written only after loading both schemes.
+        db.execute("ALTER TABLE api_order_snapshots ADD COLUMN schemes TEXT NOT NULL DEFAULT 'fbo,fbs'")
 
 
 def sync(db,client,start,end,schemes=('fbo','fbs')):
@@ -359,6 +362,7 @@ def sync(db,client,start,end,schemes=('fbo','fbs')):
     Staged API data intentionally doesn't share the Excel accounting ledger.
     """
     init_tables(db)
+    if not set(schemes)<={'fbo','fbs'}:raise ApiError('Неизвестная схема работы')
     account=hashlib.sha256(client.client_id.encode()).hexdigest()
     existing=db.execute("SELECT value FROM settings WHERE key='api_account'").fetchone()
     if existing and existing[0]!=account:raise ApiError('Эта база связана с другим магазином. Для другого Client ID нужна отдельная база.')
@@ -392,11 +396,11 @@ def sync(db,client,start,end,schemes=('fbo','fbs')):
         db.executemany('INSERT INTO api_postings VALUES(?,?,?,?) ON CONFLICT(posting_number) DO UPDATE SET schema=excluded.schema,status=excluded.status,payload=excluded.payload',
             [(p['posting_number'],p['schema'],p['status'],json.dumps(p,ensure_ascii=False,default=str)) for p in postings.values()])
         # Exact complete snapshot avoids mixing stale compositions from overlapping refreshes.
-        # A partial-scheme refresh invalidates coverage rather than implying zero orders.
+        # Coverage is explicit: a single selected scheme is a valid complete scope.
         db.execute('DELETE FROM api_order_snapshots WHERE NOT(end<? OR start>?)',(str(start),str(end)))
-        if set(schemes)=={'fbo','fbs'}:
-            db.execute('INSERT INTO api_order_snapshots(start,end,payload) VALUES(?,?,?)',
-                (str(start),str(end),json.dumps(list(postings.values()),ensure_ascii=False,default=str)))
+        if schemes:
+            db.execute('INSERT INTO api_order_snapshots(start,end,payload,schemes) VALUES(?,?,?,?)',
+                (str(start),str(end),json.dumps(list(postings.values()),ensure_ascii=False,default=str),','.join(sorted(set(schemes)))))
         for posting in postings.values():
             for product in posting['products']:
                 if product.get('sku') is not None and product.get('offer_id'):

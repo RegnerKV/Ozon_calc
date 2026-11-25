@@ -375,3 +375,31 @@ def test_order_snapshot_refresh_removes_disappeared_orders_and_partial_coverage(
     api,_,_=client([types_response(),day_response([])])
     sync(db,api,DAY,DAY,schemes=())
     assert summary(db,DAY,DAY)['total'] is None
+
+
+@pytest.mark.parametrize('scheme',['fbo','fbs'])
+def test_complete_single_selected_scheme_produces_order_counts(scheme):
+    from ozon_profit.ordered_units import summary
+    from ozon_profit.core import set_setting
+    db=connect(':memory:');set_setting(db,'api_schemes',json.dumps([scheme]))
+    raw=posting();raw.update(created_at='2026-08-03T00:00:00Z',in_process_at='2026-08-03T00:00:00Z')
+    api,_,_=client([types_response(),day_response([]),posting_response([raw])])
+    sync(db,api,DAY,DAY,schemes=(scheme,))
+    result=summary(db,DAY,DAY)
+    assert result['total']==2 and result['cancelled']==0 and result['schemes']==[scheme]
+    set_setting(db,'api_schemes','["fbo","fbs"]')
+    assert summary(db,DAY,DAY)['total'] is None
+
+
+def test_scope_filters_other_schema_and_never_calls_it_zero():
+    from ozon_profit.ordered_units import summary
+    from ozon_profit.core import set_setting
+    db=connect(':memory:')
+    fbo=posting('fbo');fbo.update(created_at='2026-08-03T00:00:00Z')
+    fbs=posting('fbs');fbs.update(in_process_at='2026-08-03T00:00:00Z',status='cancelled')
+    api,_,_=client([types_response(),day_response([]),posting_response([fbo]),posting_response([fbs])])
+    sync(db,api,DAY,DAY)
+    set_setting(db,'api_schemes','["fbo"]')
+    assert summary(db,DAY,DAY)['total']==2 and summary(db,DAY,DAY)['cancelled']==0
+    set_setting(db,'api_schemes','["fbs"]')
+    assert summary(db,DAY,DAY)['total']==2 and summary(db,DAY,DAY)['cancelled']==2

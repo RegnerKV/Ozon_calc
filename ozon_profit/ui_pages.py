@@ -122,6 +122,7 @@ def overview(db):
     metric(c,'cancelled_units','Отменено, шт.',units(ordered['cancelled']) if ordered['cancelled'] is not None else 'Нет данных')
     metric(d,'returned_units','Возвраты за период',units(result['returned_units']) if quantity_known else 'Нет данных')
     st.caption(DATE_NOTE)
+    if ordered['schemes']:st.caption('Заказы по выбранным схемам: '+', '.join(s.upper() for s in ordered['schemes']))
     if ordered['reason']:st.info(ordered['reason'])
     if issues:
         st.warning('Начисления загружены, но прибыль за этот период пока нельзя рассчитать. Ниже указаны причины.')

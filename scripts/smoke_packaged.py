@@ -74,8 +74,10 @@ def main():
     from ozon_profit.seller_api import init_tables
     init_tables(db)
     db.execute('INSERT INTO api_order_snapshots(start,end,payload) VALUES(?,?,?)',('2026-08-01','2026-08-01',json.dumps([
-        dict(posting_number='demo-one',status='awaiting_packaging',order_created_at='2026-08-01T00:00:00Z',products=[dict(offer_id='demo',quantity=3)]),
-        dict(posting_number='demo-two',status='cancelled',order_created_at='2026-08-01T00:00:00Z',products=[dict(offer_id='demo',quantity=1)])])))
+        dict(posting_number='demo-one',status='cancelled_from_split_pending',order_created_at='2026-08-01T00:00:00Z',products=[dict(offer_id='demo',quantity=3)]),
+        dict(posting_number='demo-split-one',parent_posting_number='demo-one',status='delivered',order_created_at='2026-08-01T00:00:00Z',products=[dict(offer_id='demo',quantity=2)]),
+        dict(posting_number='demo-split-two',parent_posting_number='demo-one',status='cancelled',order_created_at='2026-08-01T00:00:00Z',products=[dict(offer_id='demo',quantity=1)]),
+        dict(posting_number='demo-two',status='delivering',order_created_at='2026-08-01T00:00:00Z',products=[dict(offer_id='demo',quantity=1)])])))
     set_setting(db,'tax_base','sales');set_setting(db,'api_on_start','0');set_setting(db,'api_interval','0');db.close()
     env=dict(os.environ,OZON_PROFIT_DATA_DIR=str(temp),OZON_PROFIT_NO_BROWSER='1',PYTHONIOENCODING='utf-8')
     # Windows DPAPI in the same runner identity; no real key or API request.
