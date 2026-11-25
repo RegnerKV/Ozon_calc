@@ -21,24 +21,22 @@ def _composition(posting):
 
 def _resolve(number,postings,children,path):
     if number in path or len(path)>100:raise ValueError('Некорректные связи разделённых отправлений.')
-    parent=postings[number];basis=_composition(parent)
-    descendants=children.get(number,[])
-    if not descendants:
-        cancelled={sku:(None if parent['status']==SPLIT_STATUS else qty if parent['status']=='cancelled' else 0) for sku,qty in basis.items()}
-        return basis,cancelled
-    combined=Counter();cancelled={sku:0 for sku in basis}
+    posting=postings[number];descendants=children.get(number,[])
+    if not posting.get('status'):raise ValueError('Нет статуса отправления.')
+    # parent_posting_number describes origin, not an immutable quantity ceiling.
+    # A normal parent remains an independent current posting (possibly a
+    # remainder). Only Ozon's explicit technical split status is a container.
+    if posting['status']==SPLIT_STATUS:
+        if not descendants:
+            raise ValueError('В загрузке есть техническое разделение без фактических частей. Количество изделий пока не подтверждено.')
+        counts=Counter();cancelled=Counter()
+    else:
+        counts=_composition(posting)
+        cancelled=Counter({sku:qty if posting['status']=='cancelled' else 0 for sku,qty in counts.items()})
     for child in descendants:
-        counts,refunds=_resolve(child,postings,children,path|{number})
-        combined.update(counts)
-        for sku,value in refunds.items():
-            old=cancelled.get(sku,0)
-            cancelled[sku]=old+value if old is not None and value is not None else None
-    # The original composition is counted once. Children describe its outcomes,
-    # not new ordered units. Never infer missing cancellations from a remainder.
-    if any(qty>basis[sku] for sku,qty in combined.items()):
-        raise ValueError('Состав частей противоречит исходному отправлению. Нажмите «Обновить».')
-    if combined!=basis:return basis,{sku:None for sku in basis}
-    return basis,cancelled
+        child_counts,child_cancelled=_resolve(child,postings,children,path|{number})
+        counts.update(child_counts);cancelled.update(child_cancelled)
+    return counts,cancelled
 
 
 def summary(db,start,end):
@@ -83,15 +81,14 @@ def summary(db,start,end):
         except ValueError as exc:return {**missing,'reason':str(exc)}
         for sku,qty in counts.items():
             products[sku]['total']+=qty
-            old=products[sku]['cancelled'];value=cancelled[sku]
-            products[sku]['cancelled']=old+value if old is not None and value is not None else None
+            products[sku]['cancelled']+=cancelled[sku]
     total=sum(p['total'] for p in products.values())
-    cancelled=sum(p['cancelled'] for p in products.values()) if all(p['cancelled'] is not None for p in products.values()) else None
-    reason='Количество заказанных известно по исходному составу. Отмены не подтверждены: состав частей не сходится с исходным или разделение ещё не завершено. Нажмите «Обновить» позже.' if cancelled is None else ''
+    cancelled=sum(p['cancelled'] for p in products.values())
+    reason=''
     return dict(total=total,cancelled=cancelled,products=dict(products),reason=reason,schemes=sorted(selected))
 
 
-DATE_NOTE='Единицы товара по дате создания отправления FBO / начала обработки FBS (Москва), включая недоставленные и отменённые. Разделённый состав учитывается один раз по дате исходного отправления; техническое разделение не считается отменой товара. Отменённые входят в заказанное количество. Продажи и возвраты — по финансовым датам.'
+DATE_NOTE='Единицы товара по дате создания отправления FBO / начала обработки FBS (Москва), включая недоставленные и отменённые. После разделения учитывается текущий состав самостоятельных отправлений, включая оставшуюся родительскую часть, по дате исходного отправления. Техническая запись разделения не добавляет изделия или отмены. Отменённые входят в заказанное количество. Продажи и возвраты — по финансовым датам.'
 
 
 def product_counts(result,sku):

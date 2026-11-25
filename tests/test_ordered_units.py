@@ -50,21 +50,20 @@ def test_order_metrics_render_without_financial_sales(tmp_path,monkeypatch):
     from streamlit.testing.v1 import AppTest
     monkeypatch.setenv('OZON_PROFIT_DATA_DIR',str(tmp_path))
     db=connect();init_tables(db)
-    snapshot(db,[posting('root',5,'cancelled_from_split_pending'),
-        {**posting('one',3),'parent_posting_number':'root'},
+    snapshot(db,[posting('root',1,'delivered'),
         {**posting('cancelled',2,'cancelled'),'parent_posting_number':'root'}]);db.commit();db.close()
     app=AppTest.from_file('app.py',default_timeout=20).run()
     app.selectbox(key='overview_period').set_value('Свои даты').run()
     app.date_input(key='period_start').set_value(START)
     app.date_input(key='period_end').set_value(END).run()
     assert not app.exception
-    assert next(m for m in app.metric if m.label=='Заказано, шт.').value=='5 шт.'
+    assert next(m for m in app.metric if m.label=='Заказано, шт.').value=='3 шт.'
     assert next(m for m in app.metric if m.label=='Отменено, шт.').value=='2 шт.'
     table=next(d.value for d in app.dataframe if 'Заказано, шт.' in d.value.columns)
     assert list(table.columns[:6])==['Артикул','Изделие','Заказано, шт.','Продано, шт.','Отменено, шт.','Возвраты, шт.']
-    assert len(table)==1 and table.iloc[0]['Заказано, шт.']==5
+    assert len(table)==1 and table.iloc[0]['Заказано, шт.']==3
     assert table.iloc[0]['Продано, шт.'] is None
-    assert next(m for m in app.metric if m.label=='Заказано по артикулу').value=='5 шт.'
+    assert next(m for m in app.metric if m.label=='Заказано по артикулу').value=='3 шт.'
     assert next(m for m in app.metric if m.label=='Отменено по артикулу').value=='2 шт.'
     assert next(m for m in app.metric if m.label=='Продано по артикулу').value=='Нет данных'
     assert next(m for m in app.metric if m.label=='ДРР артикула относительно предельной цены').value=='Нет данных'
@@ -78,7 +77,7 @@ def test_fbs_uses_agreed_processing_date_without_changing_finance_date():
 
 def test_parent_and_split_compositions_are_not_double_counted():
     db=connect(':memory:');init_tables(db)
-    snapshot(db,[posting('original',3),{**posting('child',3),'parent_posting_number':'original'}])
+    snapshot(db,[posting('original',3,'cancelled_from_split_pending'),{**posting('child',3),'parent_posting_number':'original'}])
     assert summary(db,START,END)['total']==3
     assert summary(db,START,END)['cancelled']==0
 
@@ -119,30 +118,31 @@ def test_split_outside_period_does_not_create_orders_in_child_period():
     assert summary(db,START,END)['total']==0
 
 
-def test_partial_split_keeps_known_ordered_units_but_not_invented_cancellations():
+def test_obsolete_technical_composition_is_not_a_quantity_limit():
     db=connect(':memory:');init_tables(db)
     snapshot(db,[posting('root',3,'cancelled_from_split_pending'),
         {**posting('child',1,'cancelled'),'parent_posting_number':'root'},posting('other',2,'cancelled')])
     result=summary(db,START,END)
-    assert result['total']==5 and result['cancelled'] is None
-    assert result['products']['demo']['total']==5
-    assert 'Отмены не подтверждены' in result['reason']
+    assert result['total']==3 and result['cancelled']==3
+    assert result['products']['demo']==dict(total=3,cancelled=3)
+    assert result['reason']==''
 
 
-def test_split_reconciliation_matches_articles_not_just_total_units():
+def test_different_articles_in_parent_and_child_are_independent_current_contents():
     db=connect(':memory:');init_tables(db)
     snapshot(db,[posting('root',3),
         {**posting('child',3,'cancelled'),'parent_posting_number':'root','products':[dict(offer_id='different',quantity=3)]}])
     result=summary(db,START,END)
-    assert result['total'] is None and result['cancelled'] is None
-    assert 'противоречит' in result['reason']
+    assert result['total']==6 and result['cancelled']==3
+    assert result['products']=={'demo':dict(total=3,cancelled=0),'different':dict(total=3,cancelled=3)}
 
 
-def test_technical_split_without_parts_keeps_order_quantity_only():
+def test_technical_split_without_parts_is_not_replaced_by_zero_or_old_composition():
     db=connect(':memory:');init_tables(db)
     snapshot(db,[posting('root',3,'cancelled_from_split_pending')])
-    assert summary(db,START,END)['total']==3
+    assert summary(db,START,END)['total'] is None
     assert summary(db,START,END)['cancelled'] is None
+    assert 'без фактических частей' in summary(db,START,END)['reason']
 
 
 def test_cycles_do_not_recurse_or_double_count():
@@ -174,3 +174,46 @@ def test_split_quantities_and_cancellations_remain_separate_per_article():
     result=summary(db,START,END)
     assert result['total']==3 and result['cancelled']==1
     assert result['products']=={'a':dict(total=2,cancelled=0),'b':dict(total=1,cancelled=1)}
+
+
+def test_remaining_parent_one_and_cancelled_child_two_are_three_ordered_units():
+    db=connect(':memory:');init_tables(db)
+    snapshot(db,[posting('remaining',1,'delivered'),
+        {**posting('cancelled',2,'cancelled'),'parent_posting_number':'remaining'}])
+    result=summary(db,START,END)
+    assert result['total']==3 and result['cancelled']==2
+    assert result['products']=={'demo':dict(total=3,cancelled=2)}
+
+
+def test_equal_current_quantities_are_not_deduplicated_by_article_or_count():
+    db=connect(':memory:');init_tables(db)
+    snapshot(db,[posting('remaining',2,'delivered'),
+        {**posting('child',2,'cancelled'),'parent_posting_number':'remaining'}])
+    result=summary(db,START,END)
+    assert result['total']==4 and result['cancelled']==2
+
+
+def test_ordinary_cancelled_parent_is_a_real_cancellation_even_with_children():
+    db=connect(':memory:');init_tables(db)
+    snapshot(db,[posting('parent',1,'cancelled'),
+        {**posting('child',2,'delivered'),'parent_posting_number':'parent'}])
+    result=summary(db,START,END)
+    assert result['total']==3 and result['cancelled']==1
+
+
+def test_technical_parent_can_be_smaller_than_children_without_contradiction():
+    db=connect(':memory:');init_tables(db)
+    snapshot(db,[posting('container',1,'cancelled_from_split_pending'),
+        {**posting('child',3,'cancelled'),'parent_posting_number':'container'}])
+    result=summary(db,START,END)
+    assert result['total']==3 and result['cancelled']==3 and not result['reason']
+
+
+def test_nested_remainders_and_technical_container_count_each_posting_once():
+    db=connect(':memory:');init_tables(db)
+    snapshot(db,[posting('root',1,'delivered'),
+        {**posting('remainder',2,'cancelled'),'parent_posting_number':'root'},
+        {**posting('technical',100,'cancelled_from_split_pending'),'parent_posting_number':'remainder'},
+        {**posting('leaf',3,'delivered'),'parent_posting_number':'technical'}])
+    result=summary(db,START,END)
+    assert result['total']==6 and result['cancelled']==2
